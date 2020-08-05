@@ -104,7 +104,7 @@ func createRestConfig(tmpdir, namespace, clusterName string) *rest.Config {
 		Namespace: namespace,
 		Name:      clusterName,
 	}
-	kubeConfigData, err := kubeconfig.FromSecret(context.TODO(), bootstrapClusterProxy.GetClient(), cluster)
+	kubeConfigData, err := kubeconfig.FromSecret(ctx, bootstrapClusterProxy.GetClient(), cluster)
 	Expect(err).NotTo(HaveOccurred())
 
 	kubeConfigPath := path.Join(tmpdir, clusterName+".kubeconfig")
