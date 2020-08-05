@@ -59,7 +59,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 	Expect(input.BootstrapClusterProxy).NotTo(BeNil(), "Invalid argument. input.BootstrapClusterProxy can't be nil when calling %s spec", specName)
 	Expect(input.Namespace).NotTo(BeNil(), "Invalid argument. input.Namespace can't be nil when calling %s spec", specName)
 	By("creating a Kubernetes client to the workload cluster")
-	clusterProxy = input.BootstrapClusterProxy.GetWorkloadCluster(context.TODO(), input.Namespace.Name, input.ClusterName)
+	clusterProxy = input.BootstrapClusterProxy.GetWorkloadCluster(ctx, input.Namespace.Name, input.ClusterName)
 	Expect(clusterProxy).NotTo(BeNil())
 	clientset = clusterProxy.GetClientSet()
 	Expect(clientset).NotTo(BeNil())
@@ -109,7 +109,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 		Getter:     deploymentsClientAdapter{client: deploymentsClient},
 		Deployment: deployment,
 	}
-	framework.WaitForDeploymentsAvailable(context.TODO(), deployInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
+	framework.WaitForDeploymentsAvailable(ctx, deployInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
 
 	By("creating an internal Load Balancer service")
 	servicesClient := clientset.CoreV1().Services(corev1.NamespaceDefault)
@@ -146,7 +146,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 		Getter:  servicesClientAdapter{client: servicesClient},
 		Service: ilbService,
 	}
-	WaitForServiceAvailable(context.TODO(), ilbSvcInput, e2eConfig.GetIntervals(specName, "wait-service")...)
+	WaitForServiceAvailable(ctx, ilbSvcInput, e2eConfig.GetIntervals(specName, "wait-service")...)
 
 	By("connecting to the internal LB service from a curl pod")
 	jobsClient := clientset.BatchV1().Jobs(corev1.NamespaceDefault)
@@ -188,7 +188,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 		Getter: jobsClientAdapter{client: jobsClient},
 		Job:    ilbJob,
 	}
-	WaitForJobComplete(context.TODO(), ilbJobInput, e2eConfig.GetIntervals(specName, "wait-job")...)
+	WaitForJobComplete(ctx, ilbJobInput, e2eConfig.GetIntervals(specName, "wait-job")...)
 
 	By("creating an external Load Balancer service")
 	elbService := &corev1.Service{
@@ -221,7 +221,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 		Getter:  servicesClientAdapter{client: servicesClient},
 		Service: elbService,
 	}
-	WaitForServiceAvailable(context.TODO(), elbSvcInput, e2eConfig.GetIntervals(specName, "wait-service")...)
+	WaitForServiceAvailable(ctx, elbSvcInput, e2eConfig.GetIntervals(specName, "wait-service")...)
 
 	By("connecting to the external LB service from a curl pod")
 	svc, err = servicesClient.Get("ingress-nginx-elb", metav1.GetOptions{})
@@ -262,7 +262,7 @@ func AzureLBSpec(ctx context.Context, inputGetter func() AzureLBSpecInput) {
 		Getter: jobsClientAdapter{client: jobsClient},
 		Job:    elbJob,
 	}
-	WaitForJobComplete(context.TODO(), elbJobInput, e2eConfig.GetIntervals(specName, "wait-job")...)
+	WaitForJobComplete(ctx, elbJobInput, e2eConfig.GetIntervals(specName, "wait-job")...)
 
 	By("connecting directly to the external LB service")
 	url := fmt.Sprintf("http://%s", elbIP)

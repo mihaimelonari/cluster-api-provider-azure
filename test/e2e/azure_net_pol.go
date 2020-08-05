@@ -65,7 +65,7 @@ func AzureNetPolSpec(ctx context.Context, inputGetter func() AzureNetPolSpecInpu
 	Expect(input.BootstrapClusterProxy).NotTo(BeNil(), "Invalid argument. input.BootstrapClusterProxy can't be nil when calling %s spec", specName)
 	Expect(input.Namespace).NotTo(BeNil(), "Invalid argument. input.Namespace can't be nil when calling %s spec", specName)
 	By("creating a Kubernetes client to the workload cluster")
-	clusterProxy = input.BootstrapClusterProxy.GetWorkloadCluster(context.TODO(), input.Namespace.Name, input.ClusterName)
+	clusterProxy = input.BootstrapClusterProxy.GetWorkloadCluster(ctx, input.Namespace.Name, input.ClusterName)
 	Expect(clusterProxy).NotTo(BeNil())
 	clientset = clusterProxy.GetClientSet()
 	Expect(clientset).NotTo(BeNil())
@@ -108,28 +108,28 @@ func AzureNetPolSpec(ctx context.Context, inputGetter func() AzureNetPolSpecInpu
 		Getter:     deploymentsClientAdapter{client: clientset.AppsV1().Deployments(namespaceProd.GetName())},
 		Deployment: frontendProdDeployment,
 	}
-	framework.WaitForDeploymentsAvailable(context.TODO(), frontendProdDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
+	framework.WaitForDeploymentsAvailable(ctx, frontendProdDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
 
 	By("Ensure there is a running frontend-dev pod")
 	frontendDevDeploymentInput := framework.WaitForDeploymentsAvailableInput{
 		Getter:     deploymentsClientAdapter{client: clientset.AppsV1().Deployments(namespaceDev.GetName())},
 		Deployment: frontendDevDeployment,
 	}
-	framework.WaitForDeploymentsAvailable(context.TODO(), frontendDevDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
+	framework.WaitForDeploymentsAvailable(ctx, frontendDevDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
 
 	By("Ensure there is a running backend pod")
 	backendDeploymentInput := framework.WaitForDeploymentsAvailableInput{
 		Getter:     deploymentsClientAdapter{client: clientset.AppsV1().Deployments(namespaceDev.GetName())},
 		Deployment: backendDeployment,
 	}
-	framework.WaitForDeploymentsAvailable(context.TODO(), backendDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
+	framework.WaitForDeploymentsAvailable(ctx, backendDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
 
 	By("Ensure there is a running network-policy pod")
 	nwpolicyDeploymentInput := framework.WaitForDeploymentsAvailableInput{
 		Getter:     deploymentsClientAdapter{client: clientset.AppsV1().Deployments(namespaceDev.GetName())},
 		Deployment: nwpolicyDeployment,
 	}
-	framework.WaitForDeploymentsAvailable(context.TODO(), nwpolicyDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
+	framework.WaitForDeploymentsAvailable(ctx, nwpolicyDeploymentInput, e2eConfig.GetIntervals(specName, "wait-deployment")...)
 
 	By("Ensuring we have outbound internet access from the frontend-prod pods")
 	frontendProdPods, err := e2e_deployment.GetPodsFromDeployment(clientset, frontendProdDeployment)
