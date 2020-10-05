@@ -164,7 +164,8 @@ func getFilePathToCAPICRDs(root string) string {
 	for _, line := range strings.Split(string(modBits), "\n") {
 		matches := clusterAPIVersionRegex.FindStringSubmatch(line)
 		if len(matches) == 3 {
-			clusterAPIVersion = matches[2]
+			clusterAPIVersion = matches[2] + "-gs"
+			break
 		}
 	}
 
@@ -173,7 +174,7 @@ func getFilePathToCAPICRDs(root string) string {
 	}
 
 	gopath := envOr("GOPATH", build.Default.GOPATH)
-	return filepath.Join(gopath, "pkg", "mod", "sigs.k8s.io", fmt.Sprintf("cluster-api@v%s", clusterAPIVersion), "config", "crd", "bases")
+	return filepath.Join(gopath, "pkg", "mod", "github.com", "giantswarm", fmt.Sprintf("cluster-api@v%s", clusterAPIVersion), "config", "crd", "bases")
 }
 
 func envOr(envKey, defaultValue string) string {
