@@ -30,6 +30,21 @@ import (
 func (s *Service) Reconcile(ctx context.Context) error {
 	for _, ip := range s.Scope.PublicIPSpecs() {
 		s.Scope.V(2).Info("creating public IP", "public ip", ip.Name)
+
+		// only set DNS properties if there is a DNS name specified
+		addressVersion := network.IPv4
+		if ip.IsIPv6 {
+			addressVersion = network.IPv6
+		}
+
+		var dnsSettings *network.PublicIPAddressDNSSettings
+		if ip.DNSName != "" {
+			dnsSettings = &network.PublicIPAddressDNSSettings{
+				DomainNameLabel: to.StringPtr(strings.ToLower(ip.Name)),
+				Fqdn:            to.StringPtr(ip.DNSName),
+			}
+		}
+
 		err := s.Client.CreateOrUpdate(
 			ctx,
 			s.Scope.ResourceGroup(),
@@ -39,12 +54,9 @@ func (s *Service) Reconcile(ctx context.Context) error {
 				Name:     to.StringPtr(ip.Name),
 				Location: to.StringPtr(s.Scope.Location()),
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
-					PublicIPAddressVersion:   network.IPv4,
+					PublicIPAddressVersion:   addressVersion,
 					PublicIPAllocationMethod: network.Static,
-					DNSSettings: &network.PublicIPAddressDNSSettings{
-						DomainNameLabel: to.StringPtr(strings.ToLower(ip.Name)),
-						Fqdn:            to.StringPtr(ip.DNSName),
-					},
+					DNSSettings:              dnsSettings,
 				},
 			},
 		)
@@ -66,7 +78,7 @@ func (s *Service) Delete(ctx context.Context) error {
 		err := s.Client.Delete(ctx, s.Scope.ResourceGroup(), ip.Name)
 		if err != nil && azure.ResourceNotFound(err) {
 			// already deleted
-			return nil
+			continue
 		}
 		if err != nil {
 			return errors.Wrapf(err, "failed to delete public IP %s in resource group %s", ip.Name, s.Scope.ResourceGroup())

@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	corev1 "k8s.io/api/core/v1"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -90,6 +91,7 @@ func (r *AzureClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, ret
 	err := r.Get(ctx, req.NamespacedName, azureCluster)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			r.Recorder.Eventf(azureCluster, corev1.EventTypeNormal, "AzureClusterObjectNotFound", err.Error())
 			log.Info("object was not found")
 			return reconcile.Result{}, nil
 		}
@@ -102,6 +104,7 @@ func (r *AzureClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, ret
 		return reconcile.Result{}, err
 	}
 	if cluster == nil {
+		r.Recorder.Eventf(azureCluster, corev1.EventTypeNormal, "OwnerRefNotSet", "Cluster Controller has not yet set OwnerRef")
 		log.Info("Cluster Controller has not yet set OwnerRef")
 		return reconcile.Result{}, nil
 	}
@@ -110,6 +113,7 @@ func (r *AzureClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, ret
 
 	// Return early if the object or Cluster is paused.
 	if annotations.IsPaused(cluster, azureCluster) {
+		r.Recorder.Eventf(azureCluster, corev1.EventTypeNormal, "ClusterPaused", "AzureCluster or linked Cluster is marked as paused. Won't reconcile")
 		log.Info("AzureCluster or linked Cluster is marked as paused. Won't reconcile")
 		return ctrl.Result{}, nil
 	}
@@ -122,7 +126,9 @@ func (r *AzureClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, ret
 		AzureCluster: azureCluster,
 	})
 	if err != nil {
-		return reconcile.Result{}, errors.Errorf("failed to create scope: %+v", err)
+		err = errors.Errorf("failed to create scope: %+v", err)
+		r.Recorder.Eventf(azureCluster, corev1.EventTypeWarning, "CreateClusterScopeFailed", err.Error())
+		return reconcile.Result{}, err
 	}
 
 	// Always close the scope when exiting this function so we can persist any AzureMachine changes.
@@ -161,9 +167,38 @@ func (r *AzureClusterReconciler) reconcileNormal(ctx context.Context, clusterSco
 		return reconcile.Result{}, err
 	}
 
+	// Handle backcompat for CidrBlock
+	if clusterScope.Vnet().CidrBlock != "" {
+		message := "vnet cidrBlock is deprecated, use cidrBlocks instead"
+		clusterScope.Info(message)
+		r.Recorder.Eventf(clusterScope.AzureCluster, corev1.EventTypeWarning, "DeprecatedField", message)
+
+		// Set CIDRBlocks if it is not set.
+		if len(clusterScope.Vnet().CIDRBlocks) == 0 {
+			clusterScope.Info("vnet cidrBlocks not set, setting with value from deprecated vnet cidrBlock", "cidrBlock", clusterScope.Vnet().CidrBlock)
+			clusterScope.Vnet().CIDRBlocks = []string{clusterScope.Vnet().CidrBlock}
+		}
+	}
+
+	for _, subnet := range clusterScope.Subnets() {
+		if subnet.CidrBlock != "" {
+			message := "subnet cidrBlock is deprecated, use cidrBlocks instead"
+			clusterScope.Info(message)
+			r.Recorder.Eventf(clusterScope.AzureCluster, corev1.EventTypeWarning, "DeprecatedField", message)
+
+			// Set CIDRBlocks if it is not set.
+			if len(subnet.CIDRBlocks) == 0 {
+				clusterScope.Info("subnet cidrBlocks not set, setting with value from deprecated subnet cidrBlock", "cidrBlock", subnet.CidrBlock)
+				subnet.CIDRBlocks = []string{subnet.CidrBlock}
+			}
+		}
+	}
+
 	err := newAzureClusterReconciler(clusterScope).Reconcile(ctx)
 	if err != nil {
-		return reconcile.Result{}, errors.Wrap(err, "failed to reconcile cluster services")
+		wrappedErr := errors.Wrap(err, "failed to reconcile cluster services")
+		r.Recorder.Eventf(azureCluster, corev1.EventTypeWarning, "ClusterReconcilerNormalFailed", wrappedErr.Error())
+		return reconcile.Result{}, wrappedErr
 	}
 
 	if azureCluster.Status.Network.APIServerIP.DNSName == "" {
@@ -191,7 +226,9 @@ func (r *AzureClusterReconciler) reconcileDelete(ctx context.Context, clusterSco
 	azureCluster := clusterScope.AzureCluster
 
 	if err := newAzureClusterReconciler(clusterScope).Delete(ctx); err != nil {
-		return reconcile.Result{}, errors.Wrapf(err, "error deleting AzureCluster %s/%s", azureCluster.Namespace, azureCluster.Name)
+		wrappedErr := errors.Wrapf(err, "error deleting AzureCluster %s/%s", azureCluster.Namespace, azureCluster.Name)
+		r.Recorder.Eventf(azureCluster, corev1.EventTypeWarning, "ClusterReconcilerDeleteFailed", wrappedErr.Error())
+		return reconcile.Result{}, wrappedErr
 	}
 
 	// Cluster is deleted so remove the finalizer.

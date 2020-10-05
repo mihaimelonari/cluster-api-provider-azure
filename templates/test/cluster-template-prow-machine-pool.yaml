@@ -1,6 +1,8 @@
 apiVersion: cluster.x-k8s.io/v1alpha3
 kind: Cluster
 metadata:
+  labels:
+    cni: ${CLUSTER_NAME}-crs-0
   name: ${CLUSTER_NAME}
   namespace: default
 spec:
@@ -89,7 +91,7 @@ spec:
     files:
     - contentFrom:
         secret:
-          key: azure.json
+          key: control-plane-azure.json
           name: ${CLUSTER_NAME}-control-plane-azure-json
       owner: root:root
       path: /etc/kubernetes/azure.json
@@ -131,7 +133,7 @@ spec:
         managedDisk:
           storageAccountType: Premium_LRS
         osType: Linux
-      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY}
+      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
       vmSize: ${AZURE_CONTROL_PLANE_MACHINE_TYPE}
 ---
 apiVersion: exp.cluster.x-k8s.io/v1alpha3
@@ -169,7 +171,7 @@ spec:
       managedDisk:
         storageAccountType: Premium_LRS
       osType: Linux
-    sshPublicKey: ${AZURE_SSH_PUBLIC_KEY}
+    sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
     vmSize: ${AZURE_NODE_MACHINE_TYPE}
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1alpha3
@@ -181,7 +183,7 @@ spec:
   files:
   - contentFrom:
       secret:
-        key: azure.json
+        key: worker-node-azure.json
         name: ${CLUSTER_NAME}-mp-0-azure-json
     owner: root:root
     path: /etc/kubernetes/azure.json
@@ -193,3 +195,24 @@ spec:
         cloud-provider: azure
       name: '{{ ds.meta_data["local_hostname"] }}'
   useExperimentalRetryJoin: true
+---
+apiVersion: v1
+data: ${CNI_RESOURCES}
+kind: ConfigMap
+metadata:
+  name: cni-${CLUSTER_NAME}-crs-0
+  namespace: default
+---
+apiVersion: addons.cluster.x-k8s.io/v1alpha3
+kind: ClusterResourceSet
+metadata:
+  name: ${CLUSTER_NAME}-crs-0
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cni: ${CLUSTER_NAME}-crs-0
+  resources:
+  - kind: ConfigMap
+    name: cni-${CLUSTER_NAME}-crs-0
+  strategy: ApplyOnce

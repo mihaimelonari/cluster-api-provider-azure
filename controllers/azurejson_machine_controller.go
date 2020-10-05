@@ -91,21 +91,20 @@ func (f filterUnclonedMachinesPredicate) Generic(e event.GenericEvent) bool {
 	}
 
 	// when watching machines, we only care about machines users created one-off
-	// outside of machinedeployments/machinesets. if a machine is part of a machineset
+	// outside of machinedeployments/machinesets and using AzureMachineTemplates. if a machine is part of a machineset
 	// or machinedeployment, we already created a secret for the template. All machines
 	// in the machinedeployment will share that one secret.
-	_, isControlPlaneNode := e.Meta.GetLabels()[clusterv1.MachineControlPlaneLabelName]
-	_, isMachineSetNode := e.Meta.GetLabels()[clusterv1.MachineSetLabelName]
-	_, isMachineDeploymentNode := e.Meta.GetLabels()[clusterv1.MachineDeploymentLabelName]
+	gvk := infrav1.GroupVersion.WithKind("AzureMachineTemplate")
+	isClonedFromTemplate := e.Meta.GetAnnotations()[clusterv1.TemplateClonedFromGroupKindAnnotation] == gvk.GroupKind().String()
 
-	return !isControlPlaneNode && !isMachineSetNode && !isMachineDeploymentNode
+	return !isClonedFromTemplate
 }
 
 // Reconcile reconciles the azure json for a specific machine not in a machine deployment
 func (r *AzureJSONMachineReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reterr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), reconciler.DefaultedLoopTimeout(r.ReconcileTimeout))
 	defer cancel()
-	log := r.Log.WithValues("namespace", req.Namespace, "AzureJSONMachine", req.Name)
+	log := r.Log.WithValues("namespace", req.Namespace, "AzureMachine", req.Name)
 
 	// Fetch the AzureMachine instance
 	azureMachine := &infrav1.AzureMachine{}
@@ -119,7 +118,7 @@ func (r *AzureJSONMachineReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 	}
 
 	// Fetch the Cluster.
-	cluster, err := util.GetOwnerCluster(ctx, r.Client, azureMachine.ObjectMeta)
+	cluster, err := util.GetClusterFromMetadata(ctx, r.Client, azureMachine.ObjectMeta)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -151,12 +150,8 @@ func (r *AzureJSONMachineReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 		Name:      cluster.Spec.InfrastructureRef.Name,
 	}
 
-	err = r.Get(ctx, azureClusterName, azureCluster)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("object was not found")
-			return reconcile.Result{}, nil
-		}
+	if err := r.Get(ctx, azureClusterName, azureCluster); err != nil {
+		log.Error(err, "failed to fetch AzureCluster")
 		return reconcile.Result{}, err
 	}
 
@@ -189,6 +184,7 @@ func (r *AzureJSONMachineReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 		clusterScope,
 		azureMachine.Namespace,
 		azureMachine.Name,
+		owner,
 		azureMachine.Spec.Identity,
 		userAssignedIdentityIfExists,
 	)

@@ -17,6 +17,8 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -29,8 +31,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
@@ -81,22 +87,26 @@ func TestGetCloudProviderConfig(t *testing.T) {
 	g := NewWithT(t)
 
 	cases := map[string]struct {
-		identityType infrav1.VMIdentity
-		identityID   string
-		expect       string
+		identityType               infrav1.VMIdentity
+		identityID                 string
+		expectedControlPlaneConfig string
+		expectedWorkerNodeConfig   string
 	}{
 		"serviceprincipal": {
-			identityType: infrav1.VMIdentityNone,
-			expect:       spCloudConfig,
+			identityType:               infrav1.VMIdentityNone,
+			expectedControlPlaneConfig: spControlPlaneCloudConfig,
+			expectedWorkerNodeConfig:   spWorkerNodeCloudConfig,
 		},
 		"system-assigned-identity": {
-			identityType: infrav1.VMIdentitySystemAssigned,
-			expect:       systemAssignedCloudConfig,
+			identityType:               infrav1.VMIdentitySystemAssigned,
+			expectedControlPlaneConfig: systemAssignedControlPlaneCloudConfig,
+			expectedWorkerNodeConfig:   systemAssignedWorkerNodeCloudConfig,
 		},
 		"user-assigned-identity": {
-			identityType: infrav1.VMIdentityUserAssigned,
-			identityID:   "foobar",
-			expect:       userAssignedCloudConfig,
+			identityType:               infrav1.VMIdentityUserAssigned,
+			identityID:                 "foobar",
+			expectedControlPlaneConfig: userAssignedControlPlaneCloudConfig,
+			expectedWorkerNodeConfig:   userAssignedWorkerNodeCloudConfig,
 		},
 	}
 
@@ -120,20 +130,103 @@ func TestGetCloudProviderConfig(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			g.Expect(err).NotTo(HaveOccurred())
-			cloudConfig, err := GetCloudProviderSecret(clusterScope, "default", "foo", tc.identityType, tc.identityID)
+			cloudConfig, err := GetCloudProviderSecret(clusterScope, "default", "foo", metav1.OwnerReference{}, tc.identityType, tc.identityID)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(cloudConfig.Data).NotTo(BeNil())
 
-			if diff := cmp.Diff(tc.expect, string(cloudConfig.Data["azure.json"])); diff != "" {
+			if diff := cmp.Diff(tc.expectedControlPlaneConfig, string(cloudConfig.Data["control-plane-azure.json"])); diff != "" {
+				t.Errorf(diff)
+			}
+			if diff := cmp.Diff(tc.expectedWorkerNodeConfig, string(cloudConfig.Data["worker-node-azure.json"])); diff != "" {
 				t.Errorf(diff)
 			}
 		})
 	}
 }
 
+func TestReconcileAzureSecret(t *testing.T) {
+	g := NewWithT(t)
+
+	cases := map[string]struct {
+		kind       string
+		apiVersion string
+		ownerName  string
+	}{
+		"azuremachine should reconcile secret successfully": {
+			kind:       "AzureMachine",
+			apiVersion: "infrastructure.cluster.x-k8s.io/v1alpha3",
+			ownerName:  "azureMachineName",
+		},
+		"azuremachinepool should reconcile secret successfully": {
+			kind:       "AzureMachinePool",
+			apiVersion: "exp.infrastructure.cluster.x-k8s.io/v1alpha3",
+			ownerName:  "azureMachinePoolName",
+		},
+		"azuremachinetemplate should reconcile secret successfully": {
+			kind:       "AzureMachineTemplate",
+			apiVersion: "infrastructure.cluster.x-k8s.io/v1alpha3",
+			ownerName:  "azureMachineTemplateName",
+		},
+	}
+
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	testLog := ctrl.Log.WithName("reconcileAzureSecret")
+
+	os.Setenv(auth.ClientID, "fooClient")
+	os.Setenv(auth.ClientSecret, "fooSecret")
+	os.Setenv(auth.TenantID, "fooTenant")
+
+	cluster := newCluster("foo")
+	azureCluster := newAzureCluster("foo", "bar")
+
+	cluster.Default()
+	azureCluster.Default()
+
+	clusterScope, err := scope.NewClusterScope(scope.ClusterScopeParams{
+		AzureClients: scope.AzureClients{
+			Authorizer: autorest.NullAuthorizer{},
+		},
+		Cluster:      cluster,
+		AzureCluster: azureCluster,
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	scheme := setupScheme(g)
+
+	kubeclient := fake.NewFakeClientWithScheme(scheme)
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			owner := metav1.OwnerReference{
+				APIVersion: tc.apiVersion,
+				Kind:       tc.kind,
+				Name:       tc.ownerName,
+			}
+			cloudConfig, err := GetCloudProviderSecret(clusterScope, "default", tc.ownerName, owner, infrav1.VMIdentitySystemAssigned, "")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(cloudConfig.Data).NotTo(BeNil())
+
+			if err := reconcileAzureSecret(context.Background(), testLog, kubeclient, owner, cloudConfig, azureCluster.ClusterName); err != nil {
+				t.Error(err)
+			}
+
+			key := types.NamespacedName{
+				Namespace: "default",
+				Name:      fmt.Sprintf("%s-azure-json", tc.ownerName),
+			}
+			found := &corev1.Secret{}
+			if err := kubeclient.Get(context.Background(), key, found); err != nil {
+				t.Error(err)
+			}
+			g.Expect(cloudConfig.Data).To(Equal(found.Data))
+			g.Expect(found.OwnerReferences).To(Equal(cloudConfig.OwnerReferences))
+		})
+	}
+}
+
 func setupScheme(g *WithT) *runtime.Scheme {
 	scheme := runtime.NewScheme()
+	g.Expect(clientgoscheme.AddToScheme(scheme)).ToNot(HaveOccurred())
 	g.Expect(infrav1.AddToScheme(scheme)).ToNot(HaveOccurred())
 	g.Expect(clusterv1.AddToScheme(scheme)).ToNot(HaveOccurred())
 	return scheme
@@ -189,7 +282,7 @@ func newAzureCluster(name, location string) *infrav1.AzureCluster {
 }
 
 const (
-	spCloudConfig = `{
+	spControlPlaneCloudConfig = `{
     "cloud": "AzurePublicCloud",
     "tenantId": "fooTenant",
     "subscriptionId": "baz",
@@ -204,19 +297,15 @@ const (
     "vnetResourceGroup": "bar",
     "subnetName": "foo-node-subnet",
     "routeTableName": "foo-node-routetable",
-    "loadBalancerSku": "standard",
+    "loadBalancerSku": "Standard",
     "maximumLoadBalancerRuleCount": 250,
     "useManagedIdentityExtension": false,
-    "useInstanceMetadata": true,
-    "userAssignedIdentityId": ""
+    "useInstanceMetadata": true
 }`
-
-	systemAssignedCloudConfig = `{
+	spWorkerNodeCloudConfig = `{
     "cloud": "AzurePublicCloud",
     "tenantId": "fooTenant",
     "subscriptionId": "baz",
-    "aadClientId": "",
-    "aadClientSecret": "",
     "resourceGroup": "bar",
     "securityGroupName": "foo-node-nsg",
     "securityGroupResourceGroup": "bar",
@@ -226,19 +315,34 @@ const (
     "vnetResourceGroup": "bar",
     "subnetName": "foo-node-subnet",
     "routeTableName": "foo-node-routetable",
-    "loadBalancerSku": "standard",
+    "loadBalancerSku": "Standard",
+    "maximumLoadBalancerRuleCount": 250,
+    "useManagedIdentityExtension": false,
+    "useInstanceMetadata": true
+}`
+
+	systemAssignedControlPlaneCloudConfig = `{
+    "cloud": "AzurePublicCloud",
+    "tenantId": "fooTenant",
+    "subscriptionId": "baz",
+    "resourceGroup": "bar",
+    "securityGroupName": "foo-node-nsg",
+    "securityGroupResourceGroup": "bar",
+    "location": "bar",
+    "vmType": "vmss",
+    "vnetName": "foo-vnet",
+    "vnetResourceGroup": "bar",
+    "subnetName": "foo-node-subnet",
+    "routeTableName": "foo-node-routetable",
+    "loadBalancerSku": "Standard",
     "maximumLoadBalancerRuleCount": 250,
     "useManagedIdentityExtension": true,
-    "useInstanceMetadata": true,
-    "userAssignedIdentityId": ""
+    "useInstanceMetadata": true
 }`
-
-	userAssignedCloudConfig = `{
+	systemAssignedWorkerNodeCloudConfig = `{
     "cloud": "AzurePublicCloud",
     "tenantId": "fooTenant",
     "subscriptionId": "baz",
-    "aadClientId": "",
-    "aadClientSecret": "",
     "resourceGroup": "bar",
     "securityGroupName": "foo-node-nsg",
     "securityGroupResourceGroup": "bar",
@@ -248,10 +352,47 @@ const (
     "vnetResourceGroup": "bar",
     "subnetName": "foo-node-subnet",
     "routeTableName": "foo-node-routetable",
-    "loadBalancerSku": "standard",
+    "loadBalancerSku": "Standard",
+    "maximumLoadBalancerRuleCount": 250,
+    "useManagedIdentityExtension": false,
+    "useInstanceMetadata": true
+}`
+
+	userAssignedControlPlaneCloudConfig = `{
+    "cloud": "AzurePublicCloud",
+    "tenantId": "fooTenant",
+    "subscriptionId": "baz",
+    "resourceGroup": "bar",
+    "securityGroupName": "foo-node-nsg",
+    "securityGroupResourceGroup": "bar",
+    "location": "bar",
+    "vmType": "vmss",
+    "vnetName": "foo-vnet",
+    "vnetResourceGroup": "bar",
+    "subnetName": "foo-node-subnet",
+    "routeTableName": "foo-node-routetable",
+    "loadBalancerSku": "Standard",
     "maximumLoadBalancerRuleCount": 250,
     "useManagedIdentityExtension": true,
     "useInstanceMetadata": true,
     "userAssignedIdentityId": "foobar"
+}`
+	userAssignedWorkerNodeCloudConfig = `{
+    "cloud": "AzurePublicCloud",
+    "tenantId": "fooTenant",
+    "subscriptionId": "baz",
+    "resourceGroup": "bar",
+    "securityGroupName": "foo-node-nsg",
+    "securityGroupResourceGroup": "bar",
+    "location": "bar",
+    "vmType": "vmss",
+    "vnetName": "foo-vnet",
+    "vnetResourceGroup": "bar",
+    "subnetName": "foo-node-subnet",
+    "routeTableName": "foo-node-routetable",
+    "loadBalancerSku": "Standard",
+    "maximumLoadBalancerRuleCount": 250,
+    "useManagedIdentityExtension": false,
+    "useInstanceMetadata": true
 }`
 )

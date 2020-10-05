@@ -24,6 +24,7 @@ import (
 type PublicIPSpec struct {
 	Name    string
 	DNSName string
+	IsIPv6  bool
 }
 
 // NICSpec defines the specification for a Network Interface.
@@ -42,6 +43,8 @@ type NICSpec struct {
 	PublicIPName              string
 	VMSize                    string
 	AcceleratedNetworking     *bool
+	IPv6Enabled               bool
+	EnableIPForwarding        bool
 }
 
 // DiskSpec defines the specification for a Disk.
@@ -55,7 +58,7 @@ type LBSpec struct {
 	PublicIPName     string
 	Role             string
 	SubnetName       string
-	SubnetCidr       string
+	SubnetCidrs      []string
 	PrivateIPAddress string
 	APIServerPort    int32
 }
@@ -74,7 +77,7 @@ type InboundNatSpec struct {
 // SubnetSpec defines the specification for a Subnet.
 type SubnetSpec struct {
 	Name                string
-	CIDR                string
+	CIDRs               []string
 	VNetName            string
 	RouteTableName      string
 	SecurityGroupName   string
@@ -86,13 +89,13 @@ type SubnetSpec struct {
 type VNetSpec struct {
 	ResourceGroup string
 	Name          string
-	CIDR          string
+	CIDRs         []string
 }
 
 // RoleAssignmentSpec defines the specification for a Role Assignment.
 type RoleAssignmentSpec struct {
 	MachineName string
-	UUID        string
+	Name        string
 }
 
 // NSGSpec defines the specification for a Security Group.
@@ -114,4 +117,36 @@ type VMSpec struct {
 	DataDisks              []infrav1.DataDisk
 	UserAssignedIdentities []infrav1.UserAssignedIdentity
 	SpotVMOptions          *infrav1.SpotVMOptions
+}
+
+// BastionSpec defines the specification for bastion host.
+type BastionSpec struct {
+	Name         string
+	SubnetName   string
+	PublicIPName string
+	VNetName     string
+}
+
+// ScaleSetSpec defines the specification for a Scale Set.
+type ScaleSetSpec struct {
+	Name                         string
+	Size                         string
+	Capacity                     int64
+	SSHKeyData                   string
+	OSDisk                       infrav1.OSDisk
+	DataDisks                    []infrav1.DataDisk
+	SubnetName                   string
+	VNetName                     string
+	VNetResourceGroup            string
+	PublicLBName                 string
+	PublicLBAddressPoolName      string
+	AcceleratedNetworking        *bool
+	TerminateNotificationTimeout *int
+}
+
+// TagsSpec defines the specification for a set of tags.
+type TagsSpec struct {
+	Scope      string
+	Tags       infrav1.Tags
+	Annotation string
 }

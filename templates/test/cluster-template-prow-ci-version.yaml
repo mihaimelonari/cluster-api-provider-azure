@@ -1,6 +1,8 @@
 apiVersion: cluster.x-k8s.io/v1alpha3
 kind: Cluster
 metadata:
+  labels:
+    cni: ${CLUSTER_NAME}-crs-0
   name: ${CLUSTER_NAME}
   namespace: default
 spec:
@@ -164,8 +166,8 @@ spec:
       permissions: "0744"
     - contentFrom:
         secret:
-          key: azure.json
-          name: azure-secret
+          key: control-plane-azure.json
+          name: ${CLUSTER_NAME}-md-0-azure-json
       owner: root:root
       path: /etc/kubernetes/azure.json
       permissions: "0644"
@@ -206,7 +208,7 @@ spec:
         marketplace:
           offer: capi
           publisher: cncf-upstream
-          sku: k8s-1dot18dot2-ubuntu-1804
+          sku: k8s-1dot18dot8-ubuntu-1804
           version: 2020.04.17
       location: ${AZURE_LOCATION}
       osDisk:
@@ -214,7 +216,7 @@ spec:
         managedDisk:
           storageAccountType: Premium_LRS
         osType: Linux
-      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY}
+      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
       vmSize: ${AZURE_CONTROL_PLANE_MACHINE_TYPE}
 ---
 apiVersion: cluster.x-k8s.io/v1alpha3
@@ -228,6 +230,9 @@ spec:
   selector:
     matchLabels: null
   template:
+    metadata:
+      labels:
+        nodepool: pool1
     spec:
       bootstrap:
         configRef:
@@ -253,7 +258,7 @@ spec:
         marketplace:
           offer: capi
           publisher: cncf-upstream
-          sku: k8s-1dot18dot2-ubuntu-1804
+          sku: k8s-1dot18dot8-ubuntu-1804
           version: 2020.04.17
       location: ${AZURE_LOCATION}
       osDisk:
@@ -261,7 +266,7 @@ spec:
         managedDisk:
           storageAccountType: Premium_LRS
         osType: Linux
-      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY}
+      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
       vmSize: ${AZURE_NODE_MACHINE_TYPE}
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1alpha3
@@ -349,8 +354,8 @@ spec:
         permissions: "0744"
       - contentFrom:
           secret:
-            key: azure.json
-            name: azure-secret
+            key: control-plane-azure.json
+            name: ${CLUSTER_NAME}-control-plane-azure-json
         owner: root:root
         path: /etc/kubernetes/azure.json
         permissions: "0644"
@@ -363,3 +368,40 @@ spec:
       preKubeadmCommands:
       - bash -c /tmp/kubeadm-bootstrap.sh
       useExperimentalRetryJoin: true
+---
+apiVersion: cluster.x-k8s.io/v1alpha3
+kind: MachineHealthCheck
+metadata:
+  name: ${CLUSTER_NAME}-mhc-0
+  namespace: default
+spec:
+  clusterName: ${CLUSTER_NAME}
+  maxUnhealthy: 100%
+  selector:
+    matchLabels:
+      nodepool: pool1
+  unhealthyConditions:
+  - status: "True"
+    timeout: 30s
+    type: E2ENodeUnhealthy
+---
+apiVersion: v1
+data: ${CNI_RESOURCES}
+kind: ConfigMap
+metadata:
+  name: cni-${CLUSTER_NAME}-crs-0
+  namespace: default
+---
+apiVersion: addons.cluster.x-k8s.io/v1alpha3
+kind: ClusterResourceSet
+metadata:
+  name: ${CLUSTER_NAME}-crs-0
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cni: ${CLUSTER_NAME}-crs-0
+  resources:
+  - kind: ConfigMap
+    name: cni-${CLUSTER_NAME}-crs-0
+  strategy: ApplyOnce

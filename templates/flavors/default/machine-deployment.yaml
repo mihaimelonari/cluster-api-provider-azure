@@ -36,7 +36,7 @@ spec:
         diskSizeGB: 128
         managedDisk:
           storageAccountType: "Premium_LRS"
-      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY}
+      sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1alpha3
 kind: KubeadmConfigTemplate
@@ -56,7 +56,7 @@ spec:
       - contentFrom:
           secret:
             name: ${CLUSTER_NAME}-md-0-azure-json
-            key: azure.json
+            key: worker-node-azure.json
         owner: root:root
         path: /etc/kubernetes/azure.json
         permissions: "0644"

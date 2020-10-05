@@ -20,8 +20,9 @@ SHELL:=/usr/bin/env bash
 
 .DEFAULT_GOAL:=help
 
-GOPATH := $(shell go env GOPATH)
-# Use GOPROXY environment variable if set
+GOPATH  := $(shell go env GOPATH)
+GOARCH  := $(shell go env GOARCH)
+GOOS    := $(shell go env GOOS)
 GOPROXY := $(shell go env GOPROXY)
 ifeq ($(GOPROXY),)
 GOPROXY := https://proxy.golang.org
@@ -82,8 +83,11 @@ GINKGO_VER := v1.13.0
 GINKGO_BIN := ginkgo
 GINKGO := $(TOOLS_BIN_DIR)/$(GINKGO_BIN)-$(GINKGO_VER)
 
+KUBECTL_VER := v1.16.13
+KUBECTL_BIN := kubectl
+KUBECTL := $(TOOLS_BIN_DIR)/$(KUBECTL_BIN)-$(KUBECTL_VER)
+
 KUBE_APISERVER=$(TOOLS_BIN_DIR)/kube-apiserver
-KUBECTL=$(TOOLS_BIN_DIR)/kubectl
 ETCD=$(TOOLS_BIN_DIR)/etcd
 
 # Define Docker related variables. Releases should modify and double check these vars.
@@ -106,8 +110,8 @@ RBAC_ROOT ?= $(MANIFEST_ROOT)/rbac
 PULL_POLICY ?= Always
 
 # Allow overriding the e2e configurations
-GINKGO_FOCUS  ?=
-GINKGO_NODES  ?= 1
+GINKGO_FOCUS ?= Workload cluster creation
+GINKGO_NODES ?= 3
 GINKGO_NOCOLOR ?= false
 ARTIFACTS ?= $(ROOT_DIR)/_artifacts
 E2E_CONF_FILE ?= $(ROOT_DIR)/test/e2e/config/azure-dev.yaml
@@ -156,16 +160,26 @@ test-integration: ## Run integration tests
 	go test -v -tags=integration ./test/integration/...
 
 .PHONY: test-e2e
-test-e2e: $(ENVSUBST) $(GINKGO) ## Run e2e tests
-	PULL_POLICY=IfNotPresent $(MAKE) docker-build
+test-e2e: $(ENVSUBST) $(KUBECTL) $(GINKGO) ## Run e2e tests
+	PULL_POLICY=IfNotPresent $(MAKE) docker-build docker-push
 	MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
 	$(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
-	$(GINKGO) -v -trace -tags=e2e -focus=$(GINKGO_FOCUS) -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) ./test/e2e -- \
+	$(GINKGO) -v -trace -tags=e2e -focus="$(GINKGO_FOCUS)" -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) ./test/e2e -- \
 	    -e2e.artifacts-folder="$(ARTIFACTS)" \
 	    -e2e.config="$(E2E_CONF_FILE_ENVSUBST)" \
 	    -e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER)
 
-$(KUBECTL) $(KUBE_APISERVER) $(ETCD): ## install test asset kubectl, kube-apiserver, etcd
+.PHONY: test-e2e-local
+test-e2e-local: $(ENVSUBST) $(KUBECTL) $(GINKGO) ## Run e2e tests
+	PULL_POLICY=IfNotPresent $(MAKE) docker-build
+	MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
+	$(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
+	$(GINKGO) -v -trace -tags=e2e -focus="$(GINKGO_FOCUS)" -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) ./test/e2e -- \
+	    -e2e.artifacts-folder="$(ARTIFACTS)" \
+	    -e2e.config="$(E2E_CONF_FILE_ENVSUBST)" \
+	    -e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER)
+
+$(KUBE_APISERVER) $(ETCD): ## install test asset kubectl, kube-apiserver, etcd
 	source ./scripts/fetch_ext_bins.sh && fetch_tools
 
 ## --------------------------------------
@@ -214,6 +228,13 @@ $(GO_APIDIFF): ## Build go-apidiff.
 
 $(GINKGO): ## Build ginkgo.
 	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) github.com/onsi/ginkgo/ginkgo $(GINKGO_BIN) $(GINKGO_VER)
+
+$(KUBECTL): ## Build kubectl
+	mkdir -p $(TOOLS_BIN_DIR)
+	rm -f "$(KUBECTL)*"
+	curl -fsL https://storage.googleapis.com/kubernetes-release/release/$(KUBECTL_VER)/bin/$(GOOS)/$(GOARCH)/kubectl -o $(KUBECTL)
+	ln -sf "$(KUBECTL)" "$(TOOLS_BIN_DIR)/$(KUBECTL_BIN)"
+	chmod +x "$(TOOLS_BIN_DIR)/$(KUBECTL_BIN)" "$(KUBECTL)"
 
 ## --------------------------------------
 ## Linting
@@ -341,6 +362,7 @@ release: clean-release  ## Builds and push container images using the latest git
 	$(MAKE) set-manifest-pull-policy PULL_POLICY=IfNotPresent
 	$(MAKE) release-manifests
 	$(MAKE) release-templates
+	$(MAKE) release-metadata
 
 .PHONY: release-manifests
 release-manifests: $(KUSTOMIZE) $(RELEASE_DIR) ## Builds the manifests to publish with a release
@@ -349,6 +371,10 @@ release-manifests: $(KUSTOMIZE) $(RELEASE_DIR) ## Builds the manifests to publis
 .PHONY: release-templates
 release-templates: $(RELEASE_DIR)
 	cp templates/cluster-template* $(RELEASE_DIR)/
+
+.PHONY: release-metadata
+release-metadata: $(RELEASE_DIR)
+	cp metadata.yaml $(RELEASE_DIR)/metadata.yaml
 
 .PHONY: release-binary
 release-binary: $(RELEASE_DIR)
@@ -359,7 +385,7 @@ release-binary: $(RELEASE_DIR)
 		-e GOARCH=$(GOARCH) \
 		-v "$$(pwd):/workspace" \
 		-w /workspace \
-		golang:1.13.8 \
+		golang:1.13.15 \
 		go build -a -ldflags '$(LDFLAGS) -extldflags "-static"' \
 		-o $(RELEASE_DIR)/$(notdir $(RELEASE_BINARY))-$(GOOS)-$(GOARCH) $(RELEASE_BINARY)
 
@@ -387,11 +413,13 @@ create-management-cluster: $(KUSTOMIZE) $(ENVSUBST)
 	$(MAKE) kind-create
 
 	# Install cert manager and wait for availability
-	kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.11.1/cert-manager.yaml
-	kubectl wait --for=condition=Available --timeout=5m apiservice v1beta1.webhook.cert-manager.io
+	kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v0.16.1/cert-manager.yaml
+	kubectl wait --for=condition=Available --timeout=5m -n cert-manager deployment/cert-manager
+	kubectl wait --for=condition=Available --timeout=5m -n cert-manager deployment/cert-manager-cainjector
+	kubectl wait --for=condition=Available --timeout=5m -n cert-manager deployment/cert-manager-webhook
 
 	# Deploy CAPI
-	curl -sSL https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.3.8/cluster-api-components.yaml | $(ENVSUBST) | kubectl apply -f -
+	curl -sSL https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.3.10/cluster-api-components.yaml | $(ENVSUBST) | kubectl apply -f -
 
 	# Deploy CAPZ
 	kind load docker-image $(CONTROLLER_IMG)-$(ARCH):$(TAG) --name=capz
@@ -401,6 +429,11 @@ create-management-cluster: $(KUSTOMIZE) $(ENVSUBST)
 	kubectl wait --for=condition=Available --timeout=5m -n capi-system deployment -l cluster.x-k8s.io/provider=cluster-api
 	kubectl wait --for=condition=Available --timeout=5m -n capi-kubeadm-bootstrap-system deployment -l cluster.x-k8s.io/provider=bootstrap-kubeadm
 	kubectl wait --for=condition=Available --timeout=5m -n capi-kubeadm-control-plane-system deployment -l cluster.x-k8s.io/provider=control-plane-kubeadm
+
+	# apply CNI ClusterResourceSets
+	kubectl create configmap calico-addon --from-file=templates/addons/calico.yaml
+	kubectl create configmap calico-ipv6-addon --from-file=templates/addons/calico-ipv6.yaml
+	kubectl apply -f templates/addons/calico-resource-set.yaml
 
 	# Wait for CAPZ deployments
 	kubectl wait --for=condition=Available --timeout=5m -n capz-system deployment -l cluster.x-k8s.io/provider=infrastructure-azure
@@ -421,7 +454,12 @@ create-workload-cluster: $(ENVSUBST)
 	timeout --foreground 600 bash -c "while ! kubectl --kubeconfig=./kubeconfig get nodes | grep master; do sleep 1; done"
 
 	# Deploy calico
-	kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico.yaml
+	@if [[ "${CLUSTER_TEMPLATE}" == *ipv6* ]]; then \
+		kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico-ipv6.yaml; \
+	else \
+		kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico.yaml; \
+	fi
+
 
 	@echo 'run "kubectl --kubeconfig=./kubeconfig ..." to work with the new target cluster'
 
@@ -440,7 +478,12 @@ create-aks-cluster: $(KUSTOMIZE) $(ENVSUBST)
 
 
 .PHONY: create-cluster
-create-cluster: create-management-cluster create-workload-cluster ## Create a workload development Kubernetes cluster on Azure in a kind management cluster.
+create-cluster: ## Create a workload development Kubernetes cluster on Azure in a kind management cluster.
+	EXP_CLUSTER_RESOURCE_SET=true \
+	EXP_AKS=true \
+	EXP_MACHINE_POOL=true \
+	$(MAKE) create-management-cluster \
+	$(MAKE) create-workload-cluster
 
 .PHONY: delete-workload-cluster
 delete-workload-cluster: ## Deletes the example workload Kubernetes cluster
@@ -457,7 +500,7 @@ kind-create: ## create capz kind cluster if needed
 
 .PHONY: tilt-up
 tilt-up: $(ENVSUBST) $(KUSTOMIZE) kind-create ## start tilt and build kind cluster if needed
-	tilt up
+	EXP_CLUSTER_RESOURCE_SET=true EXP_AKS=true EXP_MACHINE_POOL=true tilt up
 
 .PHONY: delete-cluster
 delete-cluster: delete-workload-cluster  ## Deletes the example kind cluster "capz"
