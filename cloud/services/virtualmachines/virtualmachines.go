@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/resourceskus"
 )
 
-// Get provides information about a virtual machine.
+// getExisting provides information about a virtual machine.
 func (s *Service) getExisting(ctx context.Context, name string) (*infrav1.VM, error) {
 	vm, err := s.Client.Get(ctx, s.Scope.ResourceGroup(), name)
 	if err != nil {
@@ -87,8 +87,6 @@ func (s *Service) Reconcile(ctx context.Context) error {
 				}
 			}
 
-			additionalTags := s.Scope.AdditionalTags()
-
 			priority, evictionPolicy, billingProfile, err := getSpotVMOptions(vmSpec.SpotVMOptions)
 			if err != nil {
 				return errors.Wrapf(err, "failed to get Spot VM options")
@@ -104,13 +102,14 @@ func (s *Service) Reconcile(ctx context.Context) error {
 			}
 
 			virtualMachine := compute.VirtualMachine{
+				Plan:     s.generateImagePlan(),
 				Location: to.StringPtr(s.Scope.Location()),
 				Tags: converters.TagsToMap(infrav1.Build(infrav1.BuildParams{
 					ClusterName: s.Scope.ClusterName(),
 					Lifecycle:   infrav1.ResourceLifecycleOwned,
 					Name:        to.StringPtr(vmSpec.Name),
 					Role:        to.StringPtr(vmSpec.Role),
-					Additional:  additionalTags,
+					Additional:  s.Scope.AdditionalTags(),
 				})),
 				VirtualMachineProperties: &compute.VirtualMachineProperties{
 					HardwareProfile: &compute.HardwareProfile{
@@ -139,6 +138,11 @@ func (s *Service) Reconcile(ctx context.Context) error {
 					Priority:       priority,
 					EvictionPolicy: evictionPolicy,
 					BillingProfile: billingProfile,
+					DiagnosticsProfile: &compute.DiagnosticsProfile{
+						BootDiagnostics: &compute.BootDiagnostics{
+							Enabled: to.BoolPtr(true),
+						},
+					},
 				},
 			}
 
@@ -181,6 +185,25 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Service) generateImagePlan() *compute.Plan {
+	image, err := s.Scope.GetVMImage()
+	if err != nil {
+		return nil
+	}
+	if image.Marketplace == nil || image.Marketplace.ThirdPartyImage == false {
+		return nil
+	}
+	if image.Marketplace.Publisher == "" || image.Marketplace.SKU == "" || image.Marketplace.Offer == "" {
+		return nil
+	}
+
+	return &compute.Plan{
+		Publisher: to.StringPtr(image.Marketplace.Publisher),
+		Name:      to.StringPtr(image.Marketplace.SKU),
+		Product:   to.StringPtr(image.Marketplace.Offer),
+	}
 }
 
 // Delete deletes the virtual machine with the provided name.
@@ -287,16 +310,35 @@ func (s *Service) generateStorageProfile(ctx context.Context, vmSpec azure.VMSpe
 			ManagedDisk: &compute.ManagedDiskParameters{
 				StorageAccountType: compute.StorageAccountTypes(vmSpec.OSDisk.ManagedDisk.StorageAccountType),
 			},
+			Caching: compute.CachingTypes(vmSpec.OSDisk.CachingType),
 		},
+	}
+
+	sku, err := s.ResourceSKUCache.Get(ctx, vmSpec.Size, resourceskus.VirtualMachines)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get find vm sku %s in compute api", vmSpec.Size)
+	}
+
+	// Checking if the requested VM size has at least 2 vCPUS
+	vCPUCapability, err := sku.HasCapabilityWithCapacity(resourceskus.VCPUs, resourceskus.MinimumVCPUS)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to validate the vCPU cabability")
+	}
+	if !vCPUCapability {
+		return nil, errors.New("vm size should be bigger or equal to at least 2 vCPUs")
+	}
+
+	// Checking if the requested VM size has at least 2 Gi of memory
+	MemoryCapability, err := sku.HasCapabilityWithCapacity(resourceskus.MemoryGB, resourceskus.MinimumMemory)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to validate the memory cabability")
+	}
+	if !MemoryCapability {
+		return nil, errors.New("vm memory should be bigger or equal to at least 2Gi")
 	}
 
 	// enable ephemeral OS
 	if vmSpec.OSDisk.DiffDiskSettings != nil {
-		sku, err := s.ResourceSKUCache.Get(ctx, vmSpec.Size, resourceskus.VirtualMachines)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to get find vm sku %s in compute api", vmSpec.Size)
-		}
-
 		if !sku.HasCapability(resourceskus.EphemeralOSDisk) {
 			return nil, fmt.Errorf("vm size %s does not support ephemeral os. select a different vm size or disable ephemeral os", vmSpec.Size)
 		}
@@ -313,6 +355,7 @@ func (s *Service) generateStorageProfile(ctx context.Context, vmSpec azure.VMSpe
 			DiskSizeGB:   to.Int32Ptr(disk.DiskSizeGB),
 			Lun:          disk.Lun,
 			Name:         to.StringPtr(azure.GenerateDataDiskName(vmSpec.Name, disk.NameSuffix)),
+			Caching:      compute.CachingTypes(disk.CachingType),
 		})
 	}
 	storageProfile.DataDisks = &dataDisks

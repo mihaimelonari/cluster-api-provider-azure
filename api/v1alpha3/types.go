@@ -60,9 +60,16 @@ type VnetSpec struct {
 	Name string `json:"name"`
 
 	// CidrBlock is the CIDR block to be used when the provider creates a managed virtual network.
+	// DEPRECATED: Use CIDRBlocks instead
+	// +optional
 	CidrBlock string `json:"cidrBlock,omitempty"`
 
+	// CIDRBlocks defines the virtual network's address space, specified as one or more address prefixes in CIDR notation.
+	// +optional
+	CIDRBlocks []string `json:"cidrBlocks,omitempty"`
+
 	// Tags is a collection of tags describing the resource.
+	// +optional
 	Tags Tags `json:"tags,omitempty"`
 }
 
@@ -251,6 +258,11 @@ type AzureMarketplaceImage struct {
 	// time even if a new version becomes available.
 	// +kubebuilder:validation:MinLength=1
 	Version string `json:"version"`
+	// ThirdPartyImage indicates the image is published by a third party publisher and a Plan
+	// will be generated for it.
+	// +kubebuilder:default=false
+	// +optional
+	ThirdPartyImage bool `json:"thirdPartyImage"`
 }
 
 // AzureSharedGalleryImage defines an image in a Shared Image Gallery to use for VM creation
@@ -278,7 +290,7 @@ type AzureSharedGalleryImage struct {
 
 // AvailabilityZone specifies an Azure Availability Zone
 //
-// Deprecated: Use FailureDomain instead
+// DEPRECATED: Use FailureDomain instead
 type AvailabilityZone struct {
 	ID      *string `json:"id,omitempty"`
 	Enabled *bool   `json:"enabled,omitempty"`
@@ -311,6 +323,8 @@ type OSDisk struct {
 	DiskSizeGB       int32             `json:"diskSizeGB"`
 	ManagedDisk      ManagedDisk       `json:"managedDisk"`
 	DiffDiskSettings *DiffDiskSettings `json:"diffDiskSettings,omitempty"`
+	// +optional
+	CachingType string `json:"cachingType,omitempty"`
 }
 
 // DataDisk specifies the parameters that are used to add one or more data disks to the machine.
@@ -323,6 +337,8 @@ type DataDisk struct {
 	// Lun Specifies the logical unit number of the data disk. This value is used to identify data disks within the VM and therefore must be unique for each data disk attached to a VM.
 	// The value must be between 0 and 63.
 	Lun *int32 `json:"lun,omitempty"`
+	// +optional
+	CachingType string `json:"cachingType,omitempty"`
 }
 
 // ManagedDisk defines the managed disk options for a VM.
@@ -333,7 +349,7 @@ type ManagedDisk struct {
 // DiffDiskSettings describe ephemeral disk settings for the os disk.
 type DiffDiskSettings struct {
 	// Option enables ephemeral OS when set to "Local"
-	// See https://docs.microsoft.com/en-us/azure/virtual-machines/linux/ephemeral-os-disks for full details
+	// See https://docs.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks for full details
 	// +kubebuilder:validation:Enum=Local
 	Option string `json:"option"`
 }
@@ -362,8 +378,13 @@ type SubnetSpec struct {
 	Name string `json:"name"`
 
 	// CidrBlock is the CIDR block to be used when the provider creates a managed Vnet.
+	// DEPRECATED: Use CIDRBlocks instead
 	// +optional
 	CidrBlock string `json:"cidrBlock,omitempty"`
+
+	// CIDRBlocks defines the subnet's address space, specified as one or more address prefixes in CIDR notation.
+	// +optional
+	CIDRBlocks []string `json:"cidrBlocks,omitempty"`
 
 	// InternalLBIPAddress is the IP address that will be used as the internal LB private IP.
 	// For the control plane subnet only.

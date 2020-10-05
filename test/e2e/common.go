@@ -40,11 +40,11 @@ import (
 
 // Test suite constants for e2e config variables
 const (
-	KubernetesVersion   = "KUBERNETES_VERSION"
-	CNIPath             = "CNI"
 	RedactLogScriptPath = "REDACT_LOG_SCRIPT"
 	AzureResourceGroup  = "AZURE_RESOURCE_GROUP"
 	AzureVNetName       = "AZURE_VNET_NAME"
+	CNIPathIPv6         = "CNI_IPV6"
+	CNIResourcesIPv6    = "CNI_RESOURCES_IPV6"
 )
 
 func Byf(format string, a ...interface{}) {

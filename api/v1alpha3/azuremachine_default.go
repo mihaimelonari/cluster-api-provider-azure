@@ -17,33 +17,38 @@ limitations under the License.
 package v1alpha3
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
-	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/util/uuid"
+
 	"golang.org/x/crypto/ssh"
+
+	utilSSH "sigs.k8s.io/cluster-api-provider-azure/util/ssh"
 )
 
 // SetDefaultSSHPublicKey sets the default SSHPublicKey for an AzureMachine
 func (m *AzureMachine) SetDefaultSSHPublicKey() error {
 	sshKeyData := m.Spec.SSHPublicKey
 	if sshKeyData == "" {
-		privateKey, perr := rsa.GenerateKey(rand.Reader, 2048)
-		if perr != nil {
-			return errors.Wrap(perr, "Failed to generate private key")
+		_, publicRsaKey, err := utilSSH.GenerateSSHKey()
+		if err != nil {
+			return err
 		}
 
-		publicRsaKey, perr := ssh.NewPublicKey(&privateKey.PublicKey)
-		if perr != nil {
-			return errors.Wrap(perr, "Failed to generate public key")
-		}
 		m.Spec.SSHPublicKey = base64.StdEncoding.EncodeToString(ssh.MarshalAuthorizedKey(publicRsaKey))
 	}
 
 	return nil
 }
 
-// SetDefaultsDataDisks sets the data disk defaults for an AzureMachine
+// SetDefaultCachingType sets the default cache type for an AzureMachine
+func (m *AzureMachine) SetDefaultCachingType() error {
+	if m.Spec.OSDisk.CachingType == "" {
+		m.Spec.OSDisk.CachingType = "None"
+	}
+	return nil
+}
+
+// SetDataDisksDefaults sets the data disk defaults for an AzureMachine
 func (m *AzureMachine) SetDataDisksDefaults() {
 	set := make(map[int32]struct{})
 	// populate all the existing values in the set
@@ -63,6 +68,18 @@ func (m *AzureMachine) SetDataDisksDefaults() {
 					break
 				}
 			}
+		}
+		if disk.CachingType == "" {
+			m.Spec.DataDisks[i].CachingType = "ReadWrite"
+		}
+	}
+}
+
+// SetIdentityDefaults sets the defaults for VM Identity.
+func (m *AzureMachine) SetIdentityDefaults() {
+	if m.Spec.Identity == VMIdentitySystemAssigned {
+		if m.Spec.RoleAssignmentName == "" {
+			m.Spec.RoleAssignmentName = string(uuid.NewUUID())
 		}
 	}
 }

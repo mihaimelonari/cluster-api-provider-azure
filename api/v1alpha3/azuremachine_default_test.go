@@ -18,10 +18,11 @@ package v1alpha3
 
 import (
 	"encoding/json"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/google/uuid"
 	"reflect"
 	"testing"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	. "github.com/onsi/gomega"
 )
 
@@ -45,6 +46,38 @@ func TestAzureMachine_SetDefaultSSHPublicKey(t *testing.T) {
 	g.Expect(publicKeyNotExistTest.machine.Spec.SSHPublicKey).To(Not(BeEmpty()))
 }
 
+func TestAzureMachine_SetIdentityDefaults(t *testing.T) {
+	g := NewWithT(t)
+
+	type test struct {
+		machine *AzureMachine
+	}
+
+	existingRoleAssignmentName := "42862306-e485-4319-9bf0-35dbc6f6fe9c"
+	roleAssignmentExistTest := test{machine: &AzureMachine{Spec: AzureMachineSpec{
+		Identity:           VMIdentitySystemAssigned,
+		RoleAssignmentName: existingRoleAssignmentName,
+	}}}
+	roleAssignmentEmptyTest := test{machine: &AzureMachine{Spec: AzureMachineSpec{
+		Identity:           VMIdentitySystemAssigned,
+		RoleAssignmentName: "",
+	}}}
+	notSystemAssignedTest := test{machine: &AzureMachine{Spec: AzureMachineSpec{
+		Identity: VMIdentityUserAssigned,
+	}}}
+
+	roleAssignmentExistTest.machine.SetIdentityDefaults()
+	g.Expect(roleAssignmentExistTest.machine.Spec.RoleAssignmentName).To(Equal(existingRoleAssignmentName))
+
+	roleAssignmentEmptyTest.machine.SetIdentityDefaults()
+	g.Expect(roleAssignmentEmptyTest.machine.Spec.RoleAssignmentName).To(Not(BeEmpty()))
+	_, err := uuid.Parse(roleAssignmentEmptyTest.machine.Spec.RoleAssignmentName)
+	g.Expect(err).To(Not(HaveOccurred()))
+
+	notSystemAssignedTest.machine.SetIdentityDefaults()
+	g.Expect(notSystemAssignedTest.machine.Spec.RoleAssignmentName).To(BeEmpty())
+}
+
 func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -60,24 +93,28 @@ func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 			name: "no LUNs specified",
 			disks: []DataDisk{
 				{
-					NameSuffix: "testdisk1",
-					DiskSizeGB: 30,
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk2",
-					DiskSizeGB: 30,
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					CachingType: "ReadWrite",
 				},
 			},
 			output: []DataDisk{
 				{
-					NameSuffix: "testdisk1",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(0),
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(0),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk2",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(1),
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(1),
+					CachingType: "ReadWrite",
 				},
 			},
 		},
@@ -85,26 +122,30 @@ func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 			name: "All LUNs specified",
 			disks: []DataDisk{
 				{
-					NameSuffix: "testdisk1",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(5),
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(5),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk2",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(3),
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(3),
+					CachingType: "ReadWrite",
 				},
 			},
 			output: []DataDisk{
 				{
-					NameSuffix: "testdisk1",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(5),
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(5),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk2",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(3),
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(3),
+					CachingType: "ReadWrite",
 				},
 			},
 		},
@@ -112,25 +153,58 @@ func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 			name: "Some LUNs missing",
 			disks: []DataDisk{
 				{
-					NameSuffix: "testdisk1",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(0),
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(0),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk2",
-					DiskSizeGB: 30,
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk3",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(1),
+					NameSuffix:  "testdisk3",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(1),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk4",
-					DiskSizeGB: 30,
+					NameSuffix:  "testdisk4",
+					DiskSizeGB:  30,
+					CachingType: "ReadWrite",
 				},
 			},
 			output: []DataDisk{
+				{
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(0),
+					CachingType: "ReadWrite",
+				},
+				{
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(2),
+					CachingType: "ReadWrite",
+				},
+				{
+					NameSuffix:  "testdisk3",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(1),
+					CachingType: "ReadWrite",
+				},
+				{
+					NameSuffix:  "testdisk4",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(3),
+					CachingType: "ReadWrite",
+				},
+			},
+		},
+		{
+			name: "CachingType unspecified",
+			disks: []DataDisk{
 				{
 					NameSuffix: "testdisk1",
 					DiskSizeGB: 30,
@@ -141,15 +215,19 @@ func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 					DiskSizeGB: 30,
 					Lun:        to.Int32Ptr(2),
 				},
+			},
+			output: []DataDisk{
 				{
-					NameSuffix: "testdisk3",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(1),
+					NameSuffix:  "testdisk1",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(0),
+					CachingType: "ReadWrite",
 				},
 				{
-					NameSuffix: "testdisk4",
-					DiskSizeGB: 30,
-					Lun:        to.Int32Ptr(3),
+					NameSuffix:  "testdisk2",
+					DiskSizeGB:  30,
+					Lun:         to.Int32Ptr(2),
+					CachingType: "ReadWrite",
 				},
 			},
 		},
@@ -159,7 +237,7 @@ func TestAzureMachine_SetDataDisksDefaults(t *testing.T) {
 		tc := c
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			machine := hardcodedAzureMachineWithSSHKey(generateSSHPublicKey())
+			machine := hardcodedAzureMachineWithSSHKey(generateSSHPublicKey(true))
 			machine.Spec.DataDisks = tc.disks
 			machine.SetDataDisksDefaults()
 			if !reflect.DeepEqual(machine.Spec.DataDisks, tc.output) {
@@ -178,7 +256,7 @@ func createMachineWithSSHPublicKey(t *testing.T, sshPublicKey string) *AzureMach
 }
 
 func createMachineWithUserAssignedIdentities(t *testing.T, identitiesList []UserAssignedIdentity) *AzureMachine {
-	machine := hardcodedAzureMachineWithSSHKey(generateSSHPublicKey())
+	machine := hardcodedAzureMachineWithSSHKey(generateSSHPublicKey(true))
 	machine.Spec.Identity = VMIdentityUserAssigned
 	machine.Spec.UserAssignedIdentities = identitiesList
 	return machine

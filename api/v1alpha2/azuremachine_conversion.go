@@ -53,10 +53,12 @@ func restoreAzureMachineSpec(restored, dst *infrav1alpha3.AzureMachineSpec) {
 	if len(restored.UserAssignedIdentities) > 0 {
 		dst.UserAssignedIdentities = restored.UserAssignedIdentities
 	}
+	dst.RoleAssignmentName = restored.RoleAssignmentName
 	if restored.AcceleratedNetworking != nil {
 		dst.AcceleratedNetworking = restored.AcceleratedNetworking
 	}
 	dst.FailureDomain = restored.FailureDomain
+	dst.EnableIPForwarding = restored.EnableIPForwarding
 	if restored.SpotVMOptions != nil {
 		dst.SpotVMOptions = restored.SpotVMOptions.DeepCopy()
 	}
@@ -64,6 +66,11 @@ func restoreAzureMachineSpec(restored, dst *infrav1alpha3.AzureMachineSpec) {
 		dst.DataDisks = restored.DataDisks
 	}
 	dst.OSDisk.DiffDiskSettings = restored.OSDisk.DiffDiskSettings
+	dst.OSDisk.CachingType = restored.OSDisk.CachingType
+
+	if restored.Image != nil && restored.Image.Marketplace != nil {
+		dst.Image.Marketplace.ThirdPartyImage = restored.Image.Marketplace.ThirdPartyImage
+	}
 }
 
 // ConvertFrom converts from the Hub version (v1alpha3) to this version.

@@ -19,8 +19,10 @@ package scope
 import (
 	"context"
 	"fmt"
-	"github.com/Azure/go-autorest/autorest/to"
+	"k8s.io/utils/net"
 	"strconv"
+
+	"github.com/Azure/go-autorest/autorest/to"
 
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/go-logr/logr"
@@ -58,7 +60,7 @@ func NewClusterScope(params ClusterScopeParams) (*ClusterScope, error) {
 
 	err := params.AzureClients.setCredentials(params.AzureCluster.Spec.SubscriptionID)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to create Azure session")
+		return nil, errors.Wrap(err, "failed to configure azure settings and credentials from environment")
 	}
 
 	helper, err := patch.NewHelper(params.AzureCluster, params.Client)
@@ -87,11 +89,6 @@ type ClusterScope struct {
 	AzureCluster *infrav1.AzureCluster
 }
 
-// SubscriptionID returns the Azure client Subscription ID.
-func (s *ClusterScope) SubscriptionID() string {
-	return s.AzureClients.SubscriptionID()
-}
-
 // BaseURI returns the Azure ResourceManagerEndpoint.
 func (s *ClusterScope) BaseURI() string {
 	return s.ResourceManagerEndpoint
@@ -116,22 +113,14 @@ func (s *ClusterScope) PublicIPSpecs() []azure.PublicIPSpec {
 		{
 			Name:    s.Network().APIServerIP.Name,
 			DNSName: s.Network().APIServerIP.DNSName,
+			IsIPv6:  false, // currently azure requires a ipv4 lb rule to enable ipv6
 		},
 	}
 }
 
 // LBSpecs returns the load balancer specs.
 func (s *ClusterScope) LBSpecs() []azure.LBSpec {
-	return []azure.LBSpec{
-		{
-			// Internal control plane LB
-			Name:             azure.GenerateInternalLBName(s.ClusterName()),
-			SubnetName:       s.ControlPlaneSubnet().Name,
-			SubnetCidr:       s.ControlPlaneSubnet().CidrBlock,
-			PrivateIPAddress: s.ControlPlaneSubnet().InternalLBIPAddress,
-			APIServerPort:    s.APIServerPort(),
-			Role:             infrav1.InternalRole,
-		},
+	specs := []azure.LBSpec{
 		{
 			// Public API Server LB
 			Name:          azure.GeneratePublicLBName(s.ClusterName()),
@@ -146,6 +135,21 @@ func (s *ClusterScope) LBSpecs() []azure.LBSpec {
 			Role:         infrav1.NodeOutboundRole,
 		},
 	}
+	if !s.IsIPv6Enabled() {
+		// for now no internal LB is created for ipv6 enabled clusters
+		// getAvailablePrivateIP() does not work with IPv6
+		specs = append(specs, azure.LBSpec{
+			// Internal control plane LB
+			Name:             azure.GenerateInternalLBName(s.ClusterName()),
+			SubnetName:       s.ControlPlaneSubnet().Name,
+			SubnetCidrs:      s.ControlPlaneSubnet().CIDRBlocks,
+			PrivateIPAddress: s.ControlPlaneSubnet().InternalLBIPAddress,
+			APIServerPort:    s.APIServerPort(),
+			Role:             infrav1.InternalRole,
+		})
+	}
+
+	return specs
 }
 
 // RouteTableSpecs returns the node route table(s)
@@ -174,7 +178,7 @@ func (s *ClusterScope) SubnetSpecs() []azure.SubnetSpec {
 	return []azure.SubnetSpec{
 		{
 			Name:                s.ControlPlaneSubnet().Name,
-			CIDR:                s.ControlPlaneSubnet().CidrBlock,
+			CIDRs:               s.ControlPlaneSubnet().CIDRBlocks,
 			VNetName:            s.Vnet().Name,
 			SecurityGroupName:   s.ControlPlaneSubnet().SecurityGroup.Name,
 			Role:                s.ControlPlaneSubnet().Role,
@@ -183,7 +187,7 @@ func (s *ClusterScope) SubnetSpecs() []azure.SubnetSpec {
 		},
 		{
 			Name:              s.NodeSubnet().Name,
-			CIDR:              s.NodeSubnet().CidrBlock,
+			CIDRs:             s.NodeSubnet().CIDRBlocks,
 			VNetName:          s.Vnet().Name,
 			SecurityGroupName: s.NodeSubnet().SecurityGroup.Name,
 			RouteTableName:    s.NodeSubnet().RouteTable.Name,
@@ -198,7 +202,7 @@ func (s *ClusterScope) VNetSpecs() []azure.VNetSpec {
 		{
 			ResourceGroup: s.Vnet().ResourceGroup,
 			Name:          s.Vnet().Name,
-			CIDR:          s.Vnet().CidrBlock,
+			CIDRs:         s.Vnet().CIDRBlocks,
 		},
 	}
 }
@@ -211,6 +215,16 @@ func (s *ClusterScope) Vnet() *infrav1.VnetSpec {
 // IsVnetManaged returns true if the vnet is managed.
 func (s *ClusterScope) IsVnetManaged() bool {
 	return s.Vnet().ID == "" || s.Vnet().Tags.HasOwned(s.ClusterName())
+}
+
+// IsIPv6Enabled returns true if IPv6 is enabled.
+func (s *ClusterScope) IsIPv6Enabled() bool {
+	for _, cidr := range s.AzureCluster.Spec.NetworkSpec.Vnet.CIDRBlocks {
+		if net.IsIPv6CIDRString(cidr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Subnets returns the cluster subnets.
@@ -267,7 +281,13 @@ func (s *ClusterScope) ListOptionsLabelSelector() client.ListOption {
 
 // PatchObject persists the cluster configuration and status.
 func (s *ClusterScope) PatchObject(ctx context.Context) error {
-	return s.patchHelper.Patch(ctx, s.AzureCluster)
+	return s.patchHelper.Patch(
+		ctx,
+		s.AzureCluster,
+		patch.WithOwnedConditions{Conditions: []clusterv1.ConditionType{
+			clusterv1.ReadyCondition,
+			infrav1.NetworkInfrastructureReadyCondition,
+		}})
 }
 
 // Close closes the current scope persisting the cluster configuration and status.
@@ -306,7 +326,7 @@ func (s *ClusterScope) SetControlPlaneIngressRules() {
 			&infrav1.IngressRule{
 				Name:             "allow_ssh",
 				Description:      "Allow SSH",
-				Priority:         100,
+				Priority:         2200,
 				Protocol:         infrav1.SecurityGroupProtocolTCP,
 				Source:           to.StringPtr("*"),
 				SourcePorts:      to.StringPtr("*"),
@@ -316,7 +336,7 @@ func (s *ClusterScope) SetControlPlaneIngressRules() {
 			&infrav1.IngressRule{
 				Name:             "allow_apiserver",
 				Description:      "Allow K8s API Server",
-				Priority:         101,
+				Priority:         2201,
 				Protocol:         infrav1.SecurityGroupProtocolTCP,
 				Source:           to.StringPtr("*"),
 				SourcePorts:      to.StringPtr("*"),

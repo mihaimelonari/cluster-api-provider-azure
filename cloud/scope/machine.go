@@ -19,12 +19,12 @@ package scope
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/klog/klogr"
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
@@ -105,7 +105,18 @@ func (m *MachineScope) VMSpecs() []azure.VMSpec {
 	}
 }
 
-// PublicIPSpec returns the public IP specs.
+// TagsSpecs returns the tags for the AzureMachine.
+func (m *MachineScope) TagsSpecs() []azure.TagsSpec {
+	return []azure.TagsSpec{
+		{
+			Scope:      azure.VMID(m.SubscriptionID(), m.ResourceGroup(), m.Name()),
+			Tags:       m.AdditionalTags(),
+			Annotation: infrav1.VMTagsLastAppliedAnnotation,
+		},
+	}
+}
+
+// PublicIPSpecs returns the public IP specs.
 func (m *MachineScope) PublicIPSpecs() []azure.PublicIPSpec {
 	var spec []azure.PublicIPSpec
 	if m.AzureMachine.Spec.AllocatePublicIP == true {
@@ -139,15 +150,19 @@ func (m *MachineScope) NICSpecs() []azure.NICSpec {
 		SubnetName:            m.Subnet().Name,
 		VMSize:                m.AzureMachine.Spec.VMSize,
 		AcceleratedNetworking: m.AzureMachine.Spec.AcceleratedNetworking,
+		IPv6Enabled:           m.IsIPv6Enabled(),
+		EnableIPForwarding:    m.AzureMachine.Spec.EnableIPForwarding,
 	}
 	if m.Role() == infrav1.ControlPlane {
 		publicLBName := azure.GeneratePublicLBName(m.ClusterName())
 		spec.PublicLBName = publicLBName
 		spec.PublicLBAddressPoolName = azure.GenerateBackendAddressPoolName(publicLBName)
 		spec.PublicLBNATRuleName = m.Name()
-		internalLBName := azure.GenerateInternalLBName(m.ClusterName())
-		spec.InternalLBName = internalLBName
-		spec.InternalLBAddressPoolName = azure.GenerateBackendAddressPoolName(internalLBName)
+		if !m.IsIPv6Enabled() {
+			internalLBName := azure.GenerateInternalLBName(m.ClusterName())
+			spec.InternalLBName = internalLBName
+			spec.InternalLBAddressPoolName = azure.GenerateBackendAddressPoolName(internalLBName)
+		}
 	} else if m.Role() == infrav1.Node {
 		publicLBName := m.ClusterName()
 		spec.PublicLBName = publicLBName
@@ -170,6 +185,7 @@ func (m *MachineScope) NICSpecs() []azure.NICSpec {
 	return specs
 }
 
+// NICNames returns the NIC names
 func (m *MachineScope) NICNames() []string {
 	nicNames := make([]string, len(m.NICSpecs()))
 	for i, nic := range m.NICSpecs() {
@@ -183,8 +199,23 @@ func (m *MachineScope) DiskSpecs() []azure.DiskSpec {
 	spec := azure.DiskSpec{
 		Name: azure.GenerateOSDiskName(m.Name()),
 	}
+	disks := []azure.DiskSpec{spec}
 
-	return []azure.DiskSpec{spec}
+	for _, dd := range m.AzureMachine.Spec.DataDisks {
+		disks = append(disks, azure.DiskSpec{Name: azure.GenerateDataDiskName(m.Name(), dd.NameSuffix)})
+	}
+	return disks
+}
+
+// BastionSpecs returns the bastion specs.
+func (m *MachineScope) BastionSpecs() []azure.BastionSpec {
+	spec := azure.BastionSpec{
+		Name:         azure.GenerateOSDiskName(m.Name()),
+		SubnetName:   m.Subnet().Name,
+		PublicIPName: azure.GenerateNodePublicIPName(azure.GenerateNICName(m.Name())),
+		VNetName:     m.Vnet().Name,
+	}
+	return []azure.BastionSpec{spec}
 }
 
 // RoleAssignmentSpecs returns the role assignment specs.
@@ -193,7 +224,7 @@ func (m *MachineScope) RoleAssignmentSpecs() []azure.RoleAssignmentSpec {
 		return []azure.RoleAssignmentSpec{
 			{
 				MachineName: m.Name(),
-				UUID:        string(uuid.NewUUID()),
+				Name:        m.AzureMachine.Spec.RoleAssignmentName,
 			},
 		}
 	}
@@ -254,19 +285,20 @@ func (m *MachineScope) Role() string {
 
 // GetVMID returns the AzureMachine instance id by parsing Spec.ProviderID.
 func (m *MachineScope) GetVMID() string {
-	parsed, err := noderefutil.NewProviderID(m.GetProviderID())
+	parsed, err := noderefutil.NewProviderID(m.ProviderID())
 	if err != nil {
 		return ""
 	}
 	return parsed.ID()
 }
 
-// GetProviderID returns the AzureMachine providerID from the spec.
-func (m *MachineScope) GetProviderID() string {
-	if m.AzureMachine.Spec.ProviderID != nil {
-		return *m.AzureMachine.Spec.ProviderID
+// ProviderID returns the AzureMachine providerID from the spec.
+func (m *MachineScope) ProviderID() string {
+	parsed, err := noderefutil.NewProviderID(to.String(m.AzureMachine.Spec.ProviderID))
+	if err != nil {
+		return ""
 	}
-	return ""
+	return parsed.ID()
 }
 
 // SetProviderID sets the AzureMachine providerID in spec.
@@ -274,8 +306,8 @@ func (m *MachineScope) SetProviderID(v string) {
 	m.AzureMachine.Spec.ProviderID = to.StringPtr(v)
 }
 
-// GetVMState returns the AzureMachine VM state.
-func (m *MachineScope) GetVMState() infrav1.VMState {
+// VMState returns the AzureMachine VM state.
+func (m *MachineScope) VMState() infrav1.VMState {
 	if m.AzureMachine.Status.VMState != nil {
 		return *m.AzureMachine.Status.VMState
 	}
@@ -315,6 +347,33 @@ func (m *MachineScope) SetAnnotation(key, value string) {
 	m.AzureMachine.Annotations[key] = value
 }
 
+// AnnotationJSON returns a map[string]interface from a JSON annotation.
+func (m *MachineScope) AnnotationJSON(annotation string) (map[string]interface{}, error) {
+	out := map[string]interface{}{}
+	jsonAnnotation := m.AzureMachine.GetAnnotations()[annotation]
+	if len(jsonAnnotation) == 0 {
+		return out, nil
+	}
+	err := json.Unmarshal([]byte(jsonAnnotation), &out)
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// UpdateAnnotationJSON updates the `annotation` with
+// `content`. `content` in this case should be a `map[string]interface{}`
+// suitable for turning into JSON. This `content` map will be marshalled into a
+// JSON string before being set as the given `annotation`.
+func (m *MachineScope) UpdateAnnotationJSON(annotation string, content map[string]interface{}) error {
+	b, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	m.SetAnnotation(annotation, string(b))
+	return nil
+}
+
 // SetAddresses sets the Azure address status.
 func (m *MachineScope) SetAddresses(addrs []corev1.NodeAddress) {
 	m.AzureMachine.Status.Addresses = addrs
@@ -322,7 +381,13 @@ func (m *MachineScope) SetAddresses(addrs []corev1.NodeAddress) {
 
 // PatchObject persists the machine spec and status.
 func (m *MachineScope) PatchObject(ctx context.Context) error {
-	return m.patchHelper.Patch(ctx, m.AzureMachine)
+	return m.patchHelper.Patch(
+		ctx,
+		m.AzureMachine,
+		patch.WithOwnedConditions{Conditions: []clusterv1.ConditionType{
+			clusterv1.ReadyCondition,
+			infrav1.VMRunningCondition,
+		}})
 }
 
 // Close the MachineScope by updating the machine spec, machine status.
@@ -362,7 +427,7 @@ func (m *MachineScope) GetBootstrapData(ctx context.Context) (string, error) {
 	return base64.StdEncoding.EncodeToString(value), nil
 }
 
-// Pick image from the machine configuration, or use a default one.
+// GetVMImage returns the image from the machine configuration, or a default one.
 func (m *MachineScope) GetVMImage() (*infrav1.Image, error) {
 	// Use custom Marketplace image, Image ID or a Shared Image Gallery image if provided
 	if m.AzureMachine.Spec.Image != nil {

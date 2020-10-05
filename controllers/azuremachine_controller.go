@@ -196,6 +196,9 @@ func (r *AzureMachineReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, ret
 			conditions.WithConditions(
 				infrav1.VMRunningCondition,
 			),
+			conditions.WithStepCounterIfOnly(
+				infrav1.VMRunningCondition,
+			),
 		)
 
 		if err := machineScope.Close(ctx); err != nil && reterr == nil {
@@ -261,7 +264,7 @@ func (r *AzureMachineReconciler) reconcileNormal(ctx context.Context, machineSco
 		return reconcile.Result{}, errors.Wrapf(err, "failed to reconcile AzureMachine")
 	}
 
-	switch machineScope.GetVMState() {
+	switch machineScope.VMState() {
 	case infrav1.VMStateSucceeded:
 		machineScope.V(2).Info("VM is running", "id", machineScope.GetVMID())
 		conditions.MarkTrue(machineScope.AzureMachine, infrav1.VMRunningCondition)
@@ -275,17 +278,17 @@ func (r *AzureMachineReconciler) reconcileNormal(ctx context.Context, machineSco
 		conditions.MarkFalse(machineScope.AzureMachine, infrav1.VMRunningCondition, infrav1.VMNUpdatingReason, clusterv1.ConditionSeverityInfo, "")
 		machineScope.SetNotReady()
 	case infrav1.VMStateDeleting:
-		machineScope.Info("Unexpected VM deletion", "state", machineScope.GetVMState(), "instance-id", machineScope.GetVMID())
+		machineScope.Info("Unexpected VM deletion", "id", machineScope.GetVMID())
 		r.Recorder.Eventf(machineScope.AzureMachine, corev1.EventTypeWarning, "UnexpectedVMDeletion", "Unexpected Azure VM deletion")
 		conditions.MarkFalse(machineScope.AzureMachine, infrav1.VMRunningCondition, infrav1.VMDDeletingReason, clusterv1.ConditionSeverityWarning, "")
 		machineScope.SetNotReady()
 	case infrav1.VMStateFailed:
-		machineScope.SetNotReady()
 		machineScope.Error(errors.New("Failed to create or update VM"), "VM is in failed state", "id", machineScope.GetVMID())
 		r.Recorder.Eventf(machineScope.AzureMachine, corev1.EventTypeWarning, "FailedVMState", "Azure VM is in failed state")
 		machineScope.SetFailureReason(capierrors.UpdateMachineError)
-		machineScope.SetFailureMessage(errors.Errorf("Azure VM state is %s", machineScope.GetVMState()))
+		machineScope.SetFailureMessage(errors.Errorf("Azure VM state is %s", machineScope.VMState()))
 		conditions.MarkFalse(machineScope.AzureMachine, infrav1.VMRunningCondition, infrav1.VMProvisionFailedReason, clusterv1.ConditionSeverityWarning, "")
+		machineScope.SetNotReady()
 		// If VM failed provisioning, delete it so it can be recreated
 		err := ams.DeleteVM(ctx)
 		if err != nil {
@@ -293,17 +296,9 @@ func (r *AzureMachineReconciler) reconcileNormal(ctx context.Context, machineSco
 		}
 		return reconcile.Result{}, errors.Wrapf(err, "VM deleted, retry creating in next reconcile")
 	default:
-		machineScope.SetNotReady()
+		machineScope.V(2).Info("VM state is undefined", "id", machineScope.GetVMID())
 		conditions.MarkUnknown(machineScope.AzureMachine, infrav1.VMRunningCondition, "", "")
-		return reconcile.Result{}, nil
-	}
-
-	// TODO: move this out of the controller and use tags CreateOrUpdateAtScope instead.
-	// Ensure that the tags are correct.
-	err = r.reconcileTags(ctx, machineScope, ams.skuCache)
-	if err != nil {
-		r.Recorder.Eventf(machineScope.AzureMachine, corev1.EventTypeWarning, "Tags are incorrect", errors.Errorf("failed to ensure tags: %+v", err).Error())
-		return reconcile.Result{}, errors.Errorf("failed to ensure tags: %+v", err)
+		machineScope.SetNotReady()
 	}
 
 	return reconcile.Result{}, nil
@@ -312,11 +307,13 @@ func (r *AzureMachineReconciler) reconcileNormal(ctx context.Context, machineSco
 func (r *AzureMachineReconciler) reconcileDelete(ctx context.Context, machineScope *scope.MachineScope, clusterScope *scope.ClusterScope) (_ reconcile.Result, reterr error) {
 	machineScope.Info("Handling deleted AzureMachine")
 
-	if err := newAzureMachineService(machineScope, clusterScope).Delete(ctx); err != nil {
-		r.Recorder.Eventf(machineScope.AzureMachine, corev1.EventTypeWarning, "Error deleting AzureCluster", errors.Wrapf(err, "error deleting AzureCluster %s/%s", clusterScope.Namespace(), clusterScope.ClusterName()).Error())
-		return reconcile.Result{}, errors.Wrapf(err, "error deleting AzureCluster %s/%s", clusterScope.Namespace(), clusterScope.ClusterName())
+	if ShouldDeleteIndividualResources(ctx, clusterScope) {
+		machineScope.Info("Deleting AzureMachine")
+		if err := newAzureMachineService(machineScope, clusterScope).Delete(ctx); err != nil {
+			r.Recorder.Eventf(machineScope.AzureMachine, corev1.EventTypeWarning, "Error deleting AzureMachine", errors.Wrapf(err, "error deleting AzureMachine %s/%s", clusterScope.Namespace(), clusterScope.ClusterName()).Error())
+			return reconcile.Result{}, errors.Wrapf(err, "error deleting AzureMachine %s/%s", clusterScope.Namespace(), clusterScope.ClusterName())
+		}
 	}
-
 	defer func() {
 		if reterr == nil {
 			// VM is deleted so remove the finalizer.

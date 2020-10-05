@@ -66,12 +66,18 @@ type AzureMachineSpec struct {
 	// +optional
 	UserAssignedIdentities []UserAssignedIdentity `json:"userAssignedIdentities,omitempty"`
 
+	// RoleAssignmentName is the name of the role assignment to create for a system assigned identity. It can be any valid GUID.
+	// If not specified, a random GUID will be generated.
+	// +optional
+	RoleAssignmentName string `json:"roleAssignmentName,omitempty"`
+
 	// OSDisk specifies the parameters for the operating system disk of the machine
 	OSDisk OSDisk `json:"osDisk"`
 
 	// DataDisk specifies the parameters that are used to add one or more data disks to the machine
 	DataDisks []DataDisk `json:"dataDisks,omitempty"`
 
+	// DEPRECATED: to support old clients, will be removed in v1alpha4
 	Location string `json:"location"`
 
 	SSHPublicKey string `json:"sshPublicKey"`
@@ -85,6 +91,12 @@ type AzureMachineSpec struct {
 	// AllocatePublicIP allows the ability to create dynamic public ips for machines where this value is true.
 	// +optional
 	AllocatePublicIP bool `json:"allocatePublicIP,omitempty"`
+
+	// EnableIPForwarding enables IP Forwarding in Azure which is required for some CNI's to send traffic from a pods on one machine
+	// to another. This is required for IpV6 with Calico in combination with User Defined Routes (set by the Azure Cloud Controller
+	// manager). Default is false for disabled.
+	// +optional
+	EnableIPForwarding bool `json:"enableIPForwarding,omitempty"`
 
 	// AcceleratedNetworking enables or disables Azure accelerated networking. If omitted, it will be set based on
 	// whether the requested VMSize supports accelerated networking.
