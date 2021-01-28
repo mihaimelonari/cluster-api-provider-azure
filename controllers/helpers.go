@@ -20,8 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/groups"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -148,7 +150,7 @@ func referSameObject(a, b metav1.OwnerReference) bool {
 }
 
 // GetCloudProviderSecret returns the required azure json secret for the provided parameters.
-func GetCloudProviderSecret(d azure.ClusterDescriber, namespace, name string, owner metav1.OwnerReference, identityType infrav1.VMIdentity, userIdentityID string) (*corev1.Secret, error) {
+func GetCloudProviderSecret(d azure.ClusterScoper, namespace, name string, owner metav1.OwnerReference, identityType infrav1.VMIdentity, userIdentityID string) (*corev1.Secret, error) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
@@ -191,7 +193,7 @@ func GetCloudProviderSecret(d azure.ClusterDescriber, namespace, name string, ow
 	return secret, nil
 }
 
-func systemAssignedIdentityCloudProviderConfig(d azure.ClusterDescriber) (*CloudProviderConfig, *CloudProviderConfig) {
+func systemAssignedIdentityCloudProviderConfig(d azure.ClusterScoper) (*CloudProviderConfig, *CloudProviderConfig) {
 	controlPlaneConfig, workerConfig := newCloudProviderConfig(d)
 	controlPlaneConfig.AadClientID = ""
 	controlPlaneConfig.AadClientSecret = ""
@@ -199,7 +201,7 @@ func systemAssignedIdentityCloudProviderConfig(d azure.ClusterDescriber) (*Cloud
 	return controlPlaneConfig, workerConfig
 }
 
-func userAssignedIdentityCloudProviderConfig(d azure.ClusterDescriber, identityID string) (*CloudProviderConfig, *CloudProviderConfig) {
+func userAssignedIdentityCloudProviderConfig(d azure.ClusterScoper, identityID string) (*CloudProviderConfig, *CloudProviderConfig) {
 	controlPlaneConfig, workerConfig := newCloudProviderConfig(d)
 	controlPlaneConfig.AadClientID = ""
 	controlPlaneConfig.AadClientSecret = ""
@@ -208,7 +210,7 @@ func userAssignedIdentityCloudProviderConfig(d azure.ClusterDescriber, identityI
 	return controlPlaneConfig, workerConfig
 }
 
-func newCloudProviderConfig(d azure.ClusterDescriber) (controlPlaneConfig *CloudProviderConfig, workerConfig *CloudProviderConfig) {
+func newCloudProviderConfig(d azure.ClusterScoper) (controlPlaneConfig *CloudProviderConfig, workerConfig *CloudProviderConfig) {
 	return &CloudProviderConfig{
 			Cloud:                        d.CloudEnvironment(),
 			AadClientID:                  d.ClientID(),
@@ -217,13 +219,13 @@ func newCloudProviderConfig(d azure.ClusterDescriber) (controlPlaneConfig *Cloud
 			SubscriptionID:               d.SubscriptionID(),
 			ResourceGroup:                d.ResourceGroup(),
 			SecurityGroupName:            d.NodeSubnet().SecurityGroup.Name,
-			SecurityGroupResourceGroup:   d.ResourceGroup(),
+			SecurityGroupResourceGroup:   d.Vnet().ResourceGroup,
 			Location:                     d.Location(),
 			VMType:                       "vmss",
 			VnetName:                     d.Vnet().Name,
 			VnetResourceGroup:            d.Vnet().ResourceGroup,
 			SubnetName:                   d.NodeSubnet().Name,
-			RouteTableName:               fmt.Sprintf("%s-node-routetable", d.ClusterName()),
+			RouteTableName:               d.NodeRouteTable().Name,
 			LoadBalancerSku:              "Standard",
 			MaximumLoadBalancerRuleCount: 250,
 			UseManagedIdentityExtension:  false,
@@ -235,13 +237,13 @@ func newCloudProviderConfig(d azure.ClusterDescriber) (controlPlaneConfig *Cloud
 			SubscriptionID:               d.SubscriptionID(),
 			ResourceGroup:                d.ResourceGroup(),
 			SecurityGroupName:            d.NodeSubnet().SecurityGroup.Name,
-			SecurityGroupResourceGroup:   d.ResourceGroup(),
+			SecurityGroupResourceGroup:   d.Vnet().ResourceGroup,
 			Location:                     d.Location(),
 			VMType:                       "vmss",
 			VnetName:                     d.Vnet().Name,
 			VnetResourceGroup:            d.Vnet().ResourceGroup,
 			SubnetName:                   d.NodeSubnet().Name,
-			RouteTableName:               fmt.Sprintf("%s-node-routetable", d.ClusterName()),
+			RouteTableName:               d.NodeRouteTable().Name,
 			LoadBalancerSku:              "Standard",
 			MaximumLoadBalancerRuleCount: 250,
 			UseManagedIdentityExtension:  false,
@@ -273,6 +275,9 @@ type CloudProviderConfig struct {
 }
 
 func reconcileAzureSecret(ctx context.Context, log logr.Logger, kubeclient client.Client, owner metav1.OwnerReference, new *corev1.Secret, clusterName string) error {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.reconcileAzureSecret")
+	defer span.End()
+
 	// Fetch previous secret, if it exists
 	key := types.NamespacedName{
 		Namespace: new.Namespace,
@@ -286,7 +291,7 @@ func reconcileAzureSecret(ctx context.Context, log logr.Logger, kubeclient clien
 
 	// Create if it wasn't found
 	if apierrors.IsNotFound(err) {
-		if err := kubeclient.Create(ctx, new); err != nil {
+		if err := kubeclient.Create(ctx, new); err != nil && !apierrors.IsAlreadyExists(err) {
 			return errors.Wrap(err, "failed to create cluster azure json")
 		}
 		return nil
@@ -335,6 +340,9 @@ func reconcileAzureSecret(ctx context.Context, log logr.Logger, kubeclient clien
 
 // GetOwnerMachinePool returns the MachinePool object owning the current resource.
 func GetOwnerMachinePool(ctx context.Context, c client.Client, obj metav1.ObjectMeta) (*capiv1exp.MachinePool, error) {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.GetOwnerMachinePool")
+	defer span.End()
+
 	for _, ref := range obj.OwnerReferences {
 		if ref.Kind != "MachinePool" {
 			continue
@@ -353,6 +361,9 @@ func GetOwnerMachinePool(ctx context.Context, c client.Client, obj metav1.Object
 
 // GetMachinePoolByName finds and return a Machine object using the specified params.
 func GetMachinePoolByName(ctx context.Context, c client.Client, namespace, name string) (*capiv1exp.MachinePool, error) {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.GetMachinePoolByName")
+	defer span.End()
+
 	m := &capiv1exp.MachinePool{}
 	key := client.ObjectKey{Name: name, Namespace: namespace}
 	if err := c.Get(ctx, key, m); err != nil {
@@ -364,12 +375,32 @@ func GetMachinePoolByName(ctx context.Context, c client.Client, namespace, name 
 // ShouldDeleteIndividualResources returns false if the resource group is managed and the whole cluster is being deleted
 // meaning that we can rely on a single resource group delete operation as opposed to deleting every individual VM resource.
 func ShouldDeleteIndividualResources(ctx context.Context, clusterScope *scope.ClusterScope) bool {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.ShouldDeleteIndividualResources")
+	defer span.End()
+
 	if clusterScope.Cluster.DeletionTimestamp.IsZero() {
 		return true
 	}
-	grpSvc := groups.NewService(clusterScope)
+	grpSvc := groups.New(clusterScope)
 	managed, err := grpSvc.IsGroupManaged(ctx)
 	// Since this is a best effort attempt to speed up delete, we don't fail the delete if we can't get the RG status.
 	// Instead, take the long way and delete all resources one by one.
 	return err != nil || !managed
+}
+
+// GetClusterIdentityFromRef returns the AzureClusterIdentity referenced by the AzureCluster.
+func GetClusterIdentityFromRef(ctx context.Context, c client.Client, azureClusterNamespace string, ref *corev1.ObjectReference) (*infrav1.AzureClusterIdentity, error) {
+	identity := &infrav1.AzureClusterIdentity{}
+	if ref != nil {
+		namespace := ref.Namespace
+		if namespace == "" {
+			namespace = azureClusterNamespace
+		}
+		key := client.ObjectKey{Name: ref.Name, Namespace: namespace}
+		if err := c.Get(ctx, key, identity); err != nil {
+			return nil, err
+		}
+		return identity, nil
+	}
+	return nil, nil
 }

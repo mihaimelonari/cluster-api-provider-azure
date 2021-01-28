@@ -17,7 +17,7 @@ limitations under the License.
 package converters
 
 import (
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
 	"github.com/Azure/go-autorest/autorest/to"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
@@ -51,8 +51,12 @@ func SDKToVMSS(sdkvmss compute.VirtualMachineScaleSet, sdkinstances []compute.Vi
 			instance := infrav1exp.VMSSVM{
 				ID:         to.String(vm.ID),
 				InstanceID: to.String(vm.InstanceID),
-				Name:       to.String(vm.Name),
+				Name:       to.String(vm.OsProfile.ComputerName),
 				State:      infrav1.VMState(to.String(vm.ProvisioningState)),
+			}
+
+			if vm.LatestModelApplied != nil {
+				instance.LatestModelApplied = *vm.LatestModelApplied
 			}
 
 			if vm.Zones != nil && len(*vm.Zones) > 0 {

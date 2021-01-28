@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 
 	"sigs.k8s.io/cluster-api-provider-azure/internal/test/env"
+	"sigs.k8s.io/cluster-api-provider-azure/util/reconciler"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -49,17 +50,11 @@ var _ = BeforeSuite(func(done Done) {
 	By("bootstrapping test environment")
 	testEnv = env.NewTestEnvironment()
 
-	Expect((&AzureClusterReconciler{
-		Client:   testEnv,
-		Log:      testEnv.Log,
-		Recorder: testEnv.GetEventRecorderFor("azurecluster-reconciler"),
-	}).SetupWithManager(testEnv.Manager, controller.Options{MaxConcurrentReconciles: 1})).To(Succeed())
+	Expect(NewAzureClusterReconciler(testEnv, testEnv.Log, testEnv.GetEventRecorderFor("azurecluster-reconciler"), reconciler.DefaultLoopTimeout).
+		SetupWithManager(testEnv.Manager, controller.Options{MaxConcurrentReconciles: 1})).To(Succeed())
 
-	Expect((&AzureMachineReconciler{
-		Client:   testEnv,
-		Log:      testEnv.Log,
-		Recorder: testEnv.GetEventRecorderFor("azuremachine-reconciler"),
-	}).SetupWithManager(testEnv.Manager, controller.Options{MaxConcurrentReconciles: 1})).To(Succeed())
+	Expect(NewAzureMachineReconciler(testEnv, testEnv.Log, testEnv.GetEventRecorderFor("azuremachine-reconciler"), reconciler.DefaultLoopTimeout).
+		SetupWithManager(testEnv.Manager, controller.Options{MaxConcurrentReconciles: 1})).To(Succeed())
 
 	// +kubebuilder:scaffold:scheme
 

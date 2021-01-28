@@ -18,45 +18,52 @@ package tags
 
 import (
 	"context"
-	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2019-10-01/resources"
 
+	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2019-10-01/resources"
 	"github.com/Azure/go-autorest/autorest"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
-// Client wraps go-sdk
-type Client interface {
+// client wraps go-sdk
+type client interface {
 	GetAtScope(context.Context, string) (resources.TagsResource, error)
 	CreateOrUpdateAtScope(context.Context, string, resources.TagsResource) (resources.TagsResource, error)
 }
 
-// AzureClient contains the Azure go-sdk Client
-type AzureClient struct {
+// azureClient contains the Azure go-sdk Client
+type azureClient struct {
 	tags resources.TagsClient
 }
 
-var _ Client = &AzureClient{}
+var _ client = (*azureClient)(nil)
 
-// NewClient creates a new tags client from subscription ID.
-func NewClient(auth azure.Authorizer) *AzureClient {
+// newClient creates a new tags client from subscription ID.
+func newClient(auth azure.Authorizer) *azureClient {
 	c := newTagsClient(auth.SubscriptionID(), auth.BaseURI(), auth.Authorizer())
-	return &AzureClient{c}
+	return &azureClient{c}
 }
 
 // newTagsClient creates a new tags client from subscription ID.
 func newTagsClient(subscriptionID string, baseURI string, authorizer autorest.Authorizer) resources.TagsClient {
 	tagsClient := resources.NewTagsClientWithBaseURI(baseURI, subscriptionID)
-	tagsClient.Authorizer = authorizer
-	tagsClient.AddToUserAgent(azure.UserAgent())
+	azure.SetAutoRestClientDefaults(&tagsClient.Client, authorizer)
 	return tagsClient
 }
 
 // GetAtScope sends the get at scope request.
-func (ac *AzureClient) GetAtScope(ctx context.Context, scope string) (resources.TagsResource, error) {
+func (ac *azureClient) GetAtScope(ctx context.Context, scope string) (resources.TagsResource, error) {
+	ctx, span := tele.Tracer().Start(ctx, "tags.AzureClient.GetAtScope")
+	defer span.End()
+
 	return ac.tags.GetAtScope(ctx, scope)
 }
 
-// CreateOrUpdate allows adding or replacing the entire set of tags on the specified resource or subscription.
-func (ac *AzureClient) CreateOrUpdateAtScope(ctx context.Context, scope string, parameters resources.TagsResource) (resources.TagsResource, error) {
+// CreateOrUpdateAtScope allows adding or replacing the entire set of tags on the specified resource or subscription.
+func (ac *azureClient) CreateOrUpdateAtScope(ctx context.Context, scope string, parameters resources.TagsResource) (resources.TagsResource, error) {
+	ctx, span := tele.Tracer().Start(ctx, "tags.AzureClient.CreateOrUpdateAtScope")
+	defer span.End()
+
 	return ac.tags.CreateOrUpdateAtScope(ctx, scope, parameters)
 }

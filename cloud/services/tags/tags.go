@@ -18,13 +18,44 @@ package tags
 
 import (
 	"context"
+
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2019-10-01/resources"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+
+	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
+
+// TagScope defines the scope interface for a tags service.
+type TagScope interface {
+	logr.Logger
+	azure.ClusterDescriber
+	TagsSpecs() []azure.TagsSpec
+	AnnotationJSON(string) (map[string]interface{}, error)
+	UpdateAnnotationJSON(string, map[string]interface{}) error
+}
+
+// Service provides operations on azure resources
+type Service struct {
+	Scope TagScope
+	client
+}
+
+// New creates a new service.
+func New(scope TagScope) *Service {
+	return &Service{
+		Scope:  scope,
+		client: newClient(scope),
+	}
+}
 
 // Reconcile ensures tags are correct.
 func (s *Service) Reconcile(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "tags.Service.Reconcile")
+	defer span.End()
+
 	for _, tagsSpec := range s.Scope.TagsSpecs() {
 		annotation, err := s.Scope.AnnotationJSON(tagsSpec.Annotation)
 		if err != nil {
@@ -33,11 +64,11 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		changed, created, deleted, newAnnotation := tagsChanged(annotation, tagsSpec.Tags)
 		if changed {
 			s.Scope.V(2).Info("Updating tags")
-			result, err := s.Client.GetAtScope(ctx, tagsSpec.Scope)
+			result, err := s.client.GetAtScope(ctx, tagsSpec.Scope)
 			if err != nil {
 				return errors.Wrapf(err, "failed to get existing tags")
 			}
-			tags := make(map[string]*string, 0)
+			tags := make(map[string]*string)
 			if result.Properties != nil && result.Properties.Tags != nil {
 				tags = result.Properties.Tags
 			}
@@ -49,7 +80,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 				delete(tags, k)
 			}
 
-			if _, err := s.Client.CreateOrUpdateAtScope(ctx, tagsSpec.Scope, resources.TagsResource{Properties: &resources.Tags{Tags: tags}}); err != nil {
+			if _, err := s.client.CreateOrUpdateAtScope(ctx, tagsSpec.Scope, resources.TagsResource{Properties: &resources.Tags{Tags: tags}}); err != nil {
 				return errors.Wrapf(err, "cannot update tags")
 			}
 
@@ -65,6 +96,9 @@ func (s *Service) Reconcile(ctx context.Context) error {
 
 // Delete is a no-op as the tags get deleted as part of VM deletion.
 func (s *Service) Delete(ctx context.Context) error {
+	_, span := tele.Tracer().Start(ctx, "tags.Service.Delete")
+	defer span.End()
+
 	return nil
 }
 

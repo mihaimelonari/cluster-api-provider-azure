@@ -21,19 +21,29 @@ import (
 )
 
 const (
+	// ControllerNamespace is the namespace where controller manager will run
+	ControllerNamespace = "capz-system"
 	// ControlPlane machine label
 	ControlPlane string = "control-plane"
 	// Node machine label
 	Node string = "node"
 )
 
-// Network encapsulates the state of Azure networking resources.
-type Network struct {
-	// APIServerLB is the Kubernetes API server load balancer.
-	APIServerLB LoadBalancer `json:"apiServerLb,omitempty"`
+// Future contains the data needed for an Azure long running operation to continue across reconcile loops
+type Future struct {
+	// Type describes the type of future, update, create, delete, etc
+	Type string `json:"type"`
 
-	// APIServerIP is the Kubernetes API server public IP address.
-	APIServerIP PublicIP `json:"apiServerIp,omitempty"`
+	// ResourceGroup is the Azure resource group for the resource
+	// +optional
+	ResourceGroup string `json:"resourceGroup,omitempty"`
+
+	// Name is the name of the Azure resource
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// FutureData is the base64 url encoded json Azure AutoRest Future
+	FutureData string `json:"futureData,omitempty"`
 }
 
 // NetworkSpec specifies what the Azure networking resources should look like.
@@ -45,6 +55,10 @@ type NetworkSpec struct {
 	// Subnets is the configuration for the control-plane subnet and the node subnet.
 	// +optional
 	Subnets Subnets `json:"subnets,omitempty"`
+
+	// APIServerLB is the configuration for the control-plane load balancer.
+	// +optional
+	APIServerLB LoadBalancerSpec `json:"apiServerLB,omitempty"`
 }
 
 // VnetSpec configures an Azure virtual network.
@@ -145,42 +159,48 @@ type IngressRule struct {
 // IngressRules is a slice of Azure ingress rules for security groups.
 type IngressRules []*IngressRule
 
-// PublicIP defines an Azure public IP address.
-type PublicIP struct {
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	IPAddress string `json:"ipAddress,omitempty"`
-	DNSName   string `json:"dnsName,omitempty"`
+// LoadBalancerSpec defines an Azure load balancer.
+type LoadBalancerSpec struct {
+	ID          string       `json:"id,omitempty"`
+	Name        string       `json:"name,omitempty"`
+	SKU         SKU          `json:"sku,omitempty"`
+	FrontendIPs []FrontendIP `json:"frontendIPs,omitempty"`
+	Type        LBType       `json:"type,omitempty"`
 }
-
-// LoadBalancer defines an Azure load balancer.
-type LoadBalancer struct {
-	ID               string           `json:"id,omitempty"`
-	Name             string           `json:"name,omitempty"`
-	SKU              SKU              `json:"sku,omitempty"`
-	FrontendIPConfig FrontendIPConfig `json:"frontendIpConfig,omitempty"`
-	BackendPool      BackendPool      `json:"backendPool,omitempty"`
-	Tags             Tags             `json:"tags,omitempty"`
-}
-
-// FrontendIPConfig - DO NOT USE
-// this empty struct is here to preserve backwards compatibility and should be removed in v1alpha4
-type FrontendIPConfig struct{}
 
 // SKU defines an Azure load balancer SKU.
 type SKU string
 
 const (
-	// SKUBasic is the value for the Azure load balancer Basic SKU
-	SKUBasic = SKU("Basic")
-	// SKUStandard is the value for the Azure load balancer Standard SKU
+	// SKUStandard is the value for the Azure load balancer Standard SKU.
 	SKUStandard = SKU("Standard")
 )
 
-// BackendPool defines a load balancer backend pool
-type BackendPool struct {
-	Name string `json:"name,omitempty"`
-	ID   string `json:"id,omitempty"`
+// LBType defines an Azure load balancer Type.
+type LBType string
+
+const (
+	// Internal is the value for the Azure load balancer internal type.
+	Internal = LBType("Internal")
+	// Public is the value for the Azure load balancer public type.
+	Public = LBType("Public")
+)
+
+// FrontendIP defines a load balancer frontend IP configuration.
+type FrontendIP struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +optional
+	PrivateIPAddress string `json:"privateIP,omitempty"`
+	// +optional
+	PublicIP *PublicIPSpec `json:"publicIP,omitempty"`
+}
+
+// PublicIPSpec defines the inputs to create an Azure public IP address.
+type PublicIPSpec struct {
+	Name string `json:"name"`
+	// +optional
+	DNSName string `json:"dnsName,omitempty"`
 }
 
 // VMState describes the state of an Azure virtual machine.
@@ -199,6 +219,9 @@ const (
 	VMStateSucceeded VMState = "Succeeded"
 	// VMStateUpdating ...
 	VMStateUpdating VMState = "Updating"
+	// VMStateDeleted represents a deleted VM
+	// NOTE: This state is specific to capz, and does not have corresponding mapping in Azure API (https://docs.microsoft.com/en-us/azure/virtual-machines/states-lifecycle#provisioning-states)
+	VMStateDeleted VMState = "Deleted"
 )
 
 // VM describes an Azure virtual machine.
@@ -317,6 +340,25 @@ type UserAssignedIdentity struct {
 	ProviderID string `json:"providerID"`
 }
 
+const (
+	// AzureIdentityBindingSelector is the label used to match with the AzureIdentityBinding
+	// For the controller to match an identity binding, it needs a [label] with the key `aadpodidbinding`
+	// whose value is that of the `selector:` field in the `AzureIdentityBinding`.
+	AzureIdentityBindingSelector = "capz-controller-aadpodidentity-selector"
+)
+
+// IdentityType represents different types of identities.
+// +kubebuilder:validation:Enum=ServicePrincipal;UserAssignedMSI
+type IdentityType string
+
+const (
+	// UserAssignedMSI represents a user-assigned identity.
+	UserAssignedMSI IdentityType = "UserAssignedMSI"
+
+	// ServicePrincipal represents a service principal.
+	ServicePrincipal IdentityType = "ServicePrincipal"
+)
+
 // OSDisk defines the operating system disk for a VM.
 type OSDisk struct {
 	OSType           string            `json:"osType"`
@@ -343,7 +385,14 @@ type DataDisk struct {
 
 // ManagedDisk defines the managed disk options for a VM.
 type ManagedDisk struct {
-	StorageAccountType string `json:"storageAccountType"`
+	StorageAccountType string                       `json:"storageAccountType"`
+	DiskEncryptionSet  *DiskEncryptionSetParameters `json:"diskEncryptionSet,omitempty"`
+}
+
+// DiskEncryptionSetParameters defines disk encryption options.
+type DiskEncryptionSetParameters struct {
+	// ID defines resourceID for diskEncryptionSet resource. It must be in the same subscription
+	ID string `json:"id,omitempty"`
 }
 
 // DiffDiskSettings describe ephemeral disk settings for the os disk.
@@ -389,6 +438,7 @@ type SubnetSpec struct {
 	// InternalLBIPAddress is the IP address that will be used as the internal LB private IP.
 	// For the control plane subnet only.
 	// +optional
+	// Deprecated: Use LoadBalancer private IP instead
 	InternalLBIPAddress string `json:"internalLBIPAddress,omitempty"`
 
 	// SecurityGroup defines the NSG (network security group) that should be attached to this subnet.
@@ -418,4 +468,19 @@ func (n *NetworkSpec) GetNodeSubnet() *SubnetSpec {
 		}
 	}
 	return nil
+}
+
+// SecurityProfile specifies the Security profile settings for a
+// virtual machine or virtual machine scale set.
+type SecurityProfile struct {
+	// This field indicates whether Host Encryption should be enabled
+	// or disabled for a virtual machine or virtual machine scale
+	// set. Default is disabled.
+	EncryptionAtHost *bool `json:"encryptionAtHost,omitempty"`
+}
+
+// AddressRecord specifies a DNS record mapping a hostname to an IPV4 or IPv6 address.
+type AddressRecord struct {
+	Hostname string
+	IP       string
 }

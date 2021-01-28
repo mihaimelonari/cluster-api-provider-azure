@@ -32,6 +32,9 @@ export GOPROXY
 # Active module mode, as we use go modules to manage dependencies
 export GO111MODULE=on
 
+# This option is for running docker manifest command
+export DOCKER_CLI_EXPERIMENTAL := enabled
+
 # Directories.
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 TOOLS_DIR := hack/tools
@@ -40,6 +43,8 @@ TEMPLATES_DIR := $(ROOT_DIR)/templates
 BIN_DIR := $(abspath $(ROOT_DIR)/bin)
 EXP_DIR := exp
 GO_INSTALL = ./scripts/go_install.sh
+E2E_DATA_DIR ?= $(ROOT_DIR)/test/e2e/data
+KUBETEST_CONF_PATH ?= $(abspath $(E2E_DATA_DIR)/kubetest/conformance.yaml)
 
 # set --output-base used for conversion-gen which needs to be different for in GOPATH and outside GOPATH dev
 ifneq ($(abspath $(ROOT_DIR)),$(GOPATH)/src/sigs.k8s.io/cluster-api-provider-azure)
@@ -51,14 +56,14 @@ CONTROLLER_GEN_VER := v0.3.0
 CONTROLLER_GEN_BIN := controller-gen
 CONTROLLER_GEN := $(TOOLS_BIN_DIR)/$(CONTROLLER_GEN_BIN)-$(CONTROLLER_GEN_VER)
 
-CONVERSION_GEN_VER := v0.18.4
+CONVERSION_GEN_VER := v0.18.14
 CONVERSION_GEN_BIN := conversion-gen
 CONVERSION_GEN := $(TOOLS_BIN_DIR)/$(CONVERSION_GEN_BIN)-$(CONVERSION_GEN_VER)
 
 ENVSUBST_BIN := envsubst
 ENVSUBST := $(TOOLS_BIN_DIR)/$(ENVSUBST_BIN)-drone
 
-GOLANGCI_LINT_VER := v1.27.0
+GOLANGCI_LINT_VER := v1.34.0
 GOLANGCI_LINT_BIN := golangci-lint
 GOLANGCI_LINT := $(TOOLS_BIN_DIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
@@ -79,11 +84,11 @@ GO_APIDIFF_VER := latest
 GO_APIDIFF_BIN := go-apidiff
 GO_APIDIFF := $(TOOLS_BIN_DIR)/$(GO_APIDIFF_BIN)
 
-GINKGO_VER := v1.13.0
+GINKGO_VER := v1.14.2
 GINKGO_BIN := ginkgo
 GINKGO := $(TOOLS_BIN_DIR)/$(GINKGO_BIN)-$(GINKGO_VER)
 
-KUBECTL_VER := v1.16.13
+KUBECTL_VER := v1.18.14
 KUBECTL_BIN := kubectl
 KUBECTL := $(TOOLS_BIN_DIR)/$(KUBECTL_BIN)-$(KUBECTL_VER)
 
@@ -111,8 +116,10 @@ PULL_POLICY ?= Always
 
 # Allow overriding the e2e configurations
 GINKGO_FOCUS ?= Workload cluster creation
+GINKGO_SKIP ?= Creating a GPU-enabled cluster
 GINKGO_NODES ?= 3
 GINKGO_NOCOLOR ?= false
+GINKGO_ARGS ?=
 ARTIFACTS ?= $(ROOT_DIR)/_artifacts
 E2E_CONF_FILE ?= $(ROOT_DIR)/test/e2e/config/azure-dev.yaml
 E2E_CONF_FILE_ENVSUBST := $(ROOT_DIR)/test/e2e/config/azure-dev-envsubst.yaml
@@ -155,29 +162,37 @@ test-cover: envs-test $(KUBECTL) $(KUBE_APISERVER) $(ETCD) ## Run tests with cod
 	go tool cover -func=coverage.out -o coverage.txt
 	go tool cover -html=coverage.out -o coverage.html
 
-.PHONY: test-integration
-test-integration: ## Run integration tests
-	go test -v -tags=integration ./test/integration/...
+.PHONY: test-e2e-run
+test-e2e-run: $(ENVSUBST) $(KUBECTL) $(GINKGO) ## Run e2e tests
+	$(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
+    $(GINKGO) -v -trace -tags=e2e -focus="$(GINKGO_FOCUS)" -skip="$(GINKGO_SKIP)" -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) $(GINKGO_ARGS) ./test/e2e -- \
+    	-e2e.artifacts-folder="$(ARTIFACTS)" \
+    	-e2e.config="$(E2E_CONF_FILE_ENVSUBST)" \
+    	-e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER) $(E2E_ARGS)
 
 .PHONY: test-e2e
-test-e2e: $(ENVSUBST) $(KUBECTL) $(GINKGO) ## Run e2e tests
-	PULL_POLICY=IfNotPresent $(MAKE) docker-build docker-push
-	MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
-	$(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
-	$(GINKGO) -v -trace -tags=e2e -focus="$(GINKGO_FOCUS)" -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) ./test/e2e -- \
-	    -e2e.artifacts-folder="$(ARTIFACTS)" \
-	    -e2e.config="$(E2E_CONF_FILE_ENVSUBST)" \
-	    -e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER)
+test-e2e: ## Run e2e tests
+	PULL_POLICY=IfNotPresent MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
+	$(MAKE) docker-build docker-push \
+	test-e2e-run
 
+LOCAL_GINKGO_ARGS ?= -stream --progress
+LOCAL_GINKGO_ARGS += $(GINKGO_ARGS)
 .PHONY: test-e2e-local
-test-e2e-local: $(ENVSUBST) $(KUBECTL) $(GINKGO) ## Run e2e tests
-	PULL_POLICY=IfNotPresent $(MAKE) docker-build
-	MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
-	$(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
-	$(GINKGO) -v -trace -tags=e2e -focus="$(GINKGO_FOCUS)" -nodes=$(GINKGO_NODES) --noColor=$(GINKGO_NOCOLOR) ./test/e2e -- \
-	    -e2e.artifacts-folder="$(ARTIFACTS)" \
-	    -e2e.config="$(E2E_CONF_FILE_ENVSUBST)" \
-	    -e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER)
+test-e2e-local: ## Run e2e tests
+	PULL_POLICY=IfNotPresent MANAGER_IMAGE=$(CONTROLLER_IMG)-$(ARCH):$(TAG) \
+	$(MAKE) docker-build \
+	GINKGO_ARGS='$(LOCAL_GINKGO_ARGS)' \
+	test-e2e-run
+
+CONFORMANCE_E2E_ARGS ?= -kubetest.config-file=$(KUBETEST_CONF_PATH)
+CONFORMANCE_E2E_ARGS += $(E2E_ARGS)
+.PHONY: test-conformance
+test-conformance: ## Run conformance test on workload cluster.
+	$(MAKE) test-e2e-local GINKGO_FOCUS="Conformance" E2E_ARGS='$(CONFORMANCE_E2E_ARGS)' GINKGO_ARGS='$(LOCAL_GINKGO_ARGS)'
+
+test-conformance-fast: ## Run conformance test on workload cluster using a subset of the conformance suite in parallel.
+	$(MAKE) test-conformance CONFORMANCE_E2E_ARGS="-kubetest.config-file=$(KUBETEST_FAST_CONF_PATH) -kubetest.ginkgo-nodes=5 $(E2E_ARGS)"
 
 $(KUBE_APISERVER) $(ETCD): ## install test asset kubectl, kube-apiserver, etcd
 	source ./scripts/fetch_ext_bins.sh && fetch_tools
@@ -296,11 +311,17 @@ generate-flavors: $(KUSTOMIZE)
 ## Docker
 ## --------------------------------------
 
+.PHONY: docker-pull-prerequisites
+docker-pull-prerequisites:
+	docker pull docker/dockerfile:1.1-experimental
+	docker pull docker.io/library/golang:1.15.3
+	docker pull gcr.io/distroless/static:latest
+
 .PHONY: docker-build
-docker-build: ## Build the docker image for controller-manager
-	docker build --pull --build-arg ARCH=$(ARCH) . -t $(CONTROLLER_IMG)-$(ARCH):$(TAG)
-	MANIFEST_IMG=$(CONTROLLER_IMG)-$(ARCH) MANIFEST_TAG=$(TAG) $(MAKE) set-manifest-image
-	$(MAKE) set-manifest-pull-policy
+docker-build: docker-pull-prerequisites ## Build the docker image for controller-manager
+	DOCKER_BUILDKIT=1 docker build --build-arg goproxy=$(GOPROXY) --build-arg ARCH=$(ARCH) --build-arg ldflags="$(LDFLAGS)" . -t $(CONTROLLER_IMG)-$(ARCH):$(TAG)
+	$(MAKE) set-manifest-image MANIFEST_IMG=$(CONTROLLER_IMG)-$(ARCH) MANIFEST_TAG=$(TAG) TARGET_RESOURCE="./config/manager/manager_image_patch.yaml"
+	$(MAKE) set-manifest-pull-policy TARGET_RESOURCE="./config/manager/manager_pull_policy.yaml"
 
 .PHONY: docker-push
 docker-push: ## Push the docker image
@@ -385,7 +406,7 @@ release-binary: $(RELEASE_DIR)
 		-e GOARCH=$(GOARCH) \
 		-v "$$(pwd):/workspace" \
 		-w /workspace \
-		golang:1.13.15 \
+		golang:1.15.3 \
 		go build -a -ldflags '$(LDFLAGS) -extldflags "-static"' \
 		-o $(RELEASE_DIR)/$(notdir $(RELEASE_BINARY))-$(GOOS)-$(GOARCH) $(RELEASE_BINARY)
 
@@ -419,7 +440,7 @@ create-management-cluster: $(KUSTOMIZE) $(ENVSUBST)
 	kubectl wait --for=condition=Available --timeout=5m -n cert-manager deployment/cert-manager-webhook
 
 	# Deploy CAPI
-	curl -sSL https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.3.10/cluster-api-components.yaml | $(ENVSUBST) | kubectl apply -f -
+	curl -sSL https://github.com/kubernetes-sigs/cluster-api/releases/download/v0.3.13/cluster-api-components.yaml | $(ENVSUBST) | kubectl apply -f -
 
 	# Deploy CAPZ
 	kind load docker-image $(CONTROLLER_IMG)-$(ARCH):$(TAG) --name=capz
@@ -429,12 +450,15 @@ create-management-cluster: $(KUSTOMIZE) $(ENVSUBST)
 	kubectl wait --for=condition=Available --timeout=5m -n capi-system deployment -l cluster.x-k8s.io/provider=cluster-api
 	kubectl wait --for=condition=Available --timeout=5m -n capi-kubeadm-bootstrap-system deployment -l cluster.x-k8s.io/provider=bootstrap-kubeadm
 	kubectl wait --for=condition=Available --timeout=5m -n capi-kubeadm-control-plane-system deployment -l cluster.x-k8s.io/provider=control-plane-kubeadm
+	kubectl wait --for=condition=Available --timeout=5m -n capi-webhook-system deployment -l cluster.x-k8s.io/provider=cluster-api
 
 	# apply CNI ClusterResourceSets
 	kubectl create configmap calico-addon --from-file=templates/addons/calico.yaml
 	kubectl create configmap calico-ipv6-addon --from-file=templates/addons/calico-ipv6.yaml
+	kubectl create configmap flannel-windows-addon --from-file=templates/addons/windows/
 	kubectl apply -f templates/addons/calico-resource-set.yaml
-
+	kubectl apply -f templates/addons/flannel-resource-set.yaml
+	
 	# Wait for CAPZ deployments
 	kubectl wait --for=condition=Available --timeout=5m -n capz-system deployment -l cluster.x-k8s.io/provider=infrastructure-azure
 
@@ -453,13 +477,16 @@ create-workload-cluster: $(ENVSUBST)
 	kubectl get secrets $(CLUSTER_NAME)-kubeconfig -o json | jq -r .data.value | base64 --decode > ./kubeconfig
 	timeout --foreground 600 bash -c "while ! kubectl --kubeconfig=./kubeconfig get nodes | grep master; do sleep 1; done"
 
-	# Deploy calico
-	@if [[ "${CLUSTER_TEMPLATE}" == *ipv6* ]]; then \
-		kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico-ipv6.yaml; \
-	else \
-		kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico.yaml; \
+	@if [[ "${CLUSTER_TEMPLATE}" == *prow* ]]; then \
+		if [[ "${CLUSTER_TEMPLATE}" == *ipv6* ]]; then \
+			kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico-ipv6.yaml; \
+		elif [[ "${CLUSTER_TEMPLATE}" == *windows* ]]; then \
+			echo "windows being applied" \
+			kubectl --kubeconfig=./kubeconfig apply -f templates/addons/windows; \
+		else \
+			kubectl --kubeconfig=./kubeconfig apply -f templates/addons/calico.yaml; \
+		fi \
 	fi
-
 
 	@echo 'run "kubectl --kubeconfig=./kubeconfig ..." to work with the new target cluster'
 
@@ -483,7 +510,7 @@ create-cluster: ## Create a workload development Kubernetes cluster on Azure in 
 	EXP_AKS=true \
 	EXP_MACHINE_POOL=true \
 	$(MAKE) create-management-cluster \
-	$(MAKE) create-workload-cluster
+	create-workload-cluster
 
 .PHONY: delete-workload-cluster
 delete-workload-cluster: ## Deletes the example workload Kubernetes cluster
@@ -507,9 +534,9 @@ delete-cluster: delete-workload-cluster  ## Deletes the example kind cluster "ca
 	kind delete cluster --name=capz
 
 .PHONY: kind-reset
-kind-reset: ## Destroys the "capz" kind cluster.
+kind-reset: ## Destroys the "capz" and "capz-e2e" kind clusters.
 	kind delete cluster --name=capz || true
-
+	kind delete cluster --name=capz-e2e || true
 
 ## --------------------------------------
 ## Cleanup / Verification

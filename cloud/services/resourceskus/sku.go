@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
 	"github.com/pkg/errors"
 )
 
@@ -35,6 +35,8 @@ const (
 	VirtualMachines ResourceType = "virtualMachines"
 	// Disks is a convenience constant to filter resource SKUs to only include disks.
 	Disks ResourceType = "disks"
+	// AvailabilitySets is a convenience constant to filter resource SKUs to only include availability sets.
+	AvailabilitySets ResourceType = "availabilitySets"
 )
 
 // Supported models an enum of possible boolean values for resource support in the Azure API.
@@ -60,6 +62,10 @@ const (
 	MinimumVCPUS = 2
 	// MinimumMemory is the minimum memory allowed.
 	MinimumMemory = 2
+	// EncryptionAtHost identifies the capability for encryption at host.
+	EncryptionAtHost = "EncryptionAtHostSupported"
+	// MaximumPlatformFaultDomainCount identifies the maximum fault domain count for an availability set  in a region
+	MaximumPlatformFaultDomainCount = "MaximumPlatformFaultDomainCount"
 )
 
 // HasCapability return true for a capability which can be either
@@ -88,21 +94,37 @@ func (s SKU) HasCapability(name string) bool {
 // "CombinedTempDiskAndCachedWriteBytesPerSecond", "UncachedDiskIOPS",
 // and "UncachedDiskBytesPerSecond"
 func (s SKU) HasCapabilityWithCapacity(name string, value int64) (bool, error) {
+	if s.Capabilities == nil {
+		return false, nil
+	}
+
+	for _, capability := range *s.Capabilities {
+		if capability.Name == nil || *capability.Name != name || capability.Value == nil {
+			continue
+		}
+
+		intVal, err := strconv.ParseInt(*capability.Value, 10, 64)
+		if err != nil {
+			return false, errors.Wrapf(err, "failed to parse string '%s' as int64", *capability.Value)
+		}
+
+		if intVal >= value {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// GetCapability gets the value assigned to the given capability
+// Eg. MaximumPlatformFaultDomainCount -> "3" will return "3" for the capability "MaximumPlatformFaultDomainCount"
+func (s SKU) GetCapability(name string) (string, bool) {
 	if s.Capabilities != nil {
 		for _, capability := range *s.Capabilities {
 			if capability.Name != nil && *capability.Name == name {
-				if capability.Value != nil {
-					intVal, err := strconv.ParseInt(*capability.Value, 10, 64)
-					if err != nil {
-						return false, errors.Wrapf(err, "failed to parse string '%s' as int64", *capability.Value)
-					}
-					if intVal >= value {
-						return true, nil
-					}
-				}
-				return false, nil
+				return *capability.Value, true
 			}
 		}
 	}
-	return false, nil
+	return "", false
 }

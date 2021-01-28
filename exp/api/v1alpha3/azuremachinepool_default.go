@@ -20,7 +20,9 @@ import (
 	"encoding/base64"
 
 	"golang.org/x/crypto/ssh"
+	"k8s.io/apimachinery/pkg/util/uuid"
 
+	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	utilSSH "sigs.k8s.io/cluster-api-provider-azure/util/ssh"
 )
 
@@ -37,4 +39,13 @@ func (amp *AzureMachinePool) SetDefaultSSHPublicKey() error {
 	}
 
 	return nil
+}
+
+// SetIdentityDefaults sets the defaults for VMSS Identity.
+func (amp *AzureMachinePool) SetIdentityDefaults() {
+	if amp.Spec.Identity == infrav1.VMIdentitySystemAssigned {
+		if amp.Spec.RoleAssignmentName == "" {
+			amp.Spec.RoleAssignmentName = string(uuid.NewUUID())
+		}
+	}
 }

@@ -21,10 +21,15 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
 	"github.com/pkg/errors"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/cache/ttllru"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 // Cache loads resource SKUs at the beginning of reconcile to expose
@@ -43,15 +48,49 @@ type Cache struct {
 	data []compute.ResourceSku
 }
 
+// Cacher describes the ability to get and to add items to cache
+type Cacher interface {
+	Get(key interface{}) (value interface{}, ok bool)
+	Add(key interface{}, value interface{})
+}
+
 // NewCacheFunc allows for mocking out the underlying client
 type NewCacheFunc func(azure.Authorizer, string) *Cache
 
-// NewCache instantiates a cache and initializes its contents.
-func NewCache(auth azure.Authorizer, location string) *Cache {
+var (
+	_           Client = &AzureClient{}
+	doOnce      sync.Once
+	clientCache Cacher
+)
+
+// newCache instantiates a cache and initializes its contents.
+func newCache(auth azure.Authorizer, location string) *Cache {
 	return &Cache{
 		client:   NewClient(auth),
 		location: location,
 	}
+}
+
+// GetCache either creates a new SKUs cache or returns an existing one based on the location + Authorizer HashKey()
+func GetCache(auth azure.Authorizer, location string) (*Cache, error) {
+	var err error
+	doOnce.Do(func() {
+		clientCache, err = ttllru.New(128, 24*time.Hour)
+	})
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed creating LRU cache for resourceSKUs cache")
+	}
+
+	key := location + "_" + auth.HashKey()
+	c, ok := clientCache.Get(key)
+	if ok {
+		return c.(*Cache), nil
+	}
+
+	c = newCache(auth, location)
+	clientCache.Add(key, c)
+	return c.(*Cache), nil
 }
 
 // NewStaticCacheFn returns a function that initializes a cache with data and no ability to refresh. Used for testing.
@@ -69,6 +108,9 @@ func NewStaticCache(data []compute.ResourceSku) *Cache {
 }
 
 func (c *Cache) refresh(ctx context.Context, location string) error {
+	ctx, span := tele.Tracer().Start(ctx, "resourceskus.Cache.refresh")
+	defer span.End()
+
 	data, err := c.client.List(ctx, fmt.Sprintf("location eq '%s'", location))
 	if err != nil {
 		return errors.Wrap(err, "failed to refresh resource sku cache")
@@ -85,6 +127,9 @@ func (c *Cache) refresh(ctx context.Context, location string) error {
 // supported in region), which is why it returns an error and not a
 // boolean.
 func (c *Cache) Get(ctx context.Context, name string, kind ResourceType) (SKU, error) {
+	ctx, span := tele.Tracer().Start(ctx, "resourceskus.Cache.Get")
+	defer span.End()
+
 	if c.data == nil {
 		if err := c.refresh(ctx, c.location); err != nil {
 			return SKU{}, err
@@ -101,6 +146,9 @@ func (c *Cache) Get(ctx context.Context, name string, kind ResourceType) (SKU, e
 
 // Map invokes a function over all cached values.
 func (c *Cache) Map(ctx context.Context, mapFn func(sku SKU)) error {
+	ctx, span := tele.Tracer().Start(ctx, "resourceskus.Cache.Map")
+	defer span.End()
+
 	if c.data == nil {
 		if err := c.refresh(ctx, c.location); err != nil {
 			return err
@@ -119,6 +167,9 @@ func (c *Cache) Map(ctx context.Context, mapFn func(sku SKU)) error {
 // set of zones into which some machine size may deploy. It removes
 // restricted virtual machine sizes and duplicates.
 func (c *Cache) GetZones(ctx context.Context, location string) ([]string, error) {
+	ctx, span := tele.Tracer().Start(ctx, "resourceskus.Cache.GetZones")
+	defer span.End()
+
 	var allZones = make(map[string]bool)
 	mapFn := func(sku SKU) {
 		// Look for VMs only
@@ -178,6 +229,9 @@ func (c *Cache) GetZones(ctx context.Context, location string) ([]string, error)
 
 // GetZonesWithVMSize returns available zones for a virtual machine size in the given location.
 func (c *Cache) GetZonesWithVMSize(ctx context.Context, size, location string) ([]string, error) {
+	ctx, span := tele.Tracer().Start(ctx, "resourceskus.Cache.GetZonesWithVMSize")
+	defer span.End()
+
 	var allZones = make(map[string]bool)
 	mapFn := func(sku SKU) {
 		if sku.Name != nil && strings.EqualFold(*sku.Name, size) && sku.ResourceType != nil && strings.EqualFold(*sku.ResourceType, string(VirtualMachines)) {

@@ -54,18 +54,23 @@ type DiskSpec struct {
 
 // LBSpec defines the specification for a Load Balancer.
 type LBSpec struct {
-	Name             string
-	PublicIPName     string
-	Role             string
-	SubnetName       string
-	SubnetCidrs      []string
-	PrivateIPAddress string
-	APIServerPort    int32
+	Name              string
+	Role              string
+	Type              infrav1.LBType
+	SKU               infrav1.SKU
+	SubnetName        string
+	BackendPoolName   string
+	FrontendIPConfigs []infrav1.FrontendIP
+	APIServerPort     int32
 }
+
+// RouteTableRole defines the unique role of a route table.
+type RouteTableRole string
 
 // RouteTableSpec defines the specification for a Route Table.
 type RouteTableSpec struct {
-	Name string
+	Name   string
+	Subnet *infrav1.SubnetSpec
 }
 
 // InboundNatSpec defines the specification for an inbound NAT rule.
@@ -76,13 +81,12 @@ type InboundNatSpec struct {
 
 // SubnetSpec defines the specification for a Subnet.
 type SubnetSpec struct {
-	Name                string
-	CIDRs               []string
-	VNetName            string
-	RouteTableName      string
-	SecurityGroupName   string
-	Role                infrav1.SubnetRole
-	InternalLBIPAddress string
+	Name              string
+	CIDRs             []string
+	VNetName          string
+	RouteTableName    string
+	SecurityGroupName string
+	Role              infrav1.SubnetRole
 }
 
 // VNetSpec defines the specification for a Virtual Network.
@@ -94,9 +98,23 @@ type VNetSpec struct {
 
 // RoleAssignmentSpec defines the specification for a Role Assignment.
 type RoleAssignmentSpec struct {
-	MachineName string
-	Name        string
+	MachineName  string
+	Name         string
+	ResourceType string
 }
+
+// ResourceType defines the type azure resource being reconciled.
+// Eg. Virtual Machine, Virtual Machine Scale Sets
+type ResourceType string
+
+const (
+
+	// VirtualMachine ...
+	VirtualMachine = "VirtualMachine"
+
+	// VirtualMachineScaleSet ...
+	VirtualMachineScaleSet = "VirtualMachineScaleSet"
+)
 
 // NSGSpec defines the specification for a Security Group.
 type NSGSpec struct {
@@ -117,6 +135,7 @@ type VMSpec struct {
 	DataDisks              []infrav1.DataDisk
 	UserAssignedIdentities []infrav1.UserAssignedIdentity
 	SpotVMOptions          *infrav1.SpotVMOptions
+	SecurityProfile        *infrav1.SecurityProfile
 }
 
 // BastionSpec defines the specification for bastion host.
@@ -142,6 +161,10 @@ type ScaleSetSpec struct {
 	PublicLBAddressPoolName      string
 	AcceleratedNetworking        *bool
 	TerminateNotificationTimeout *int
+	Identity                     infrav1.VMIdentity
+	UserAssignedIdentities       []infrav1.UserAssignedIdentity
+	SecurityProfile              *infrav1.SecurityProfile
+	SpotVMOptions                *infrav1.SpotVMOptions
 }
 
 // TagsSpec defines the specification for a set of tags.
@@ -149,4 +172,34 @@ type TagsSpec struct {
 	Scope      string
 	Tags       infrav1.Tags
 	Annotation string
+}
+
+// PrivateDNSSpec defines the specification for a private DNS zone.
+type PrivateDNSSpec struct {
+	ZoneName          string
+	VNetName          string
+	VNetResourceGroup string
+	LinkName          string
+	Records           []infrav1.AddressRecord
+}
+
+// AvailabilitySetSpec defines the specification for an availability set.
+type AvailabilitySetSpec struct {
+	Name string
+}
+
+// VMExtensionSpec defines the specification for a VM extension.
+type VMExtensionSpec struct {
+	Name      string
+	VMName    string
+	Publisher string
+	Version   string
+}
+
+// VMSSExtensionSpec defines the specification for a VMSS extension.
+type VMSSExtensionSpec struct {
+	Name         string
+	ScaleSetName string
+	Publisher    string
+	Version      string
 }

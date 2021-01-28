@@ -24,7 +24,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/containerservice/mgmt/2020-02-01/containerservice"
 	"github.com/pkg/errors"
 	"k8s.io/klog"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 var (
@@ -37,8 +39,14 @@ type Spec struct {
 	// Name is the name of this AKS Cluster.
 	Name string
 
-	// ResourceGroup is the name of the Azure resource group for this AKS Cluster.
-	ResourceGroup string
+	// ResourceGroupName is the name of the Azure resource group for this AKS Cluster.
+	ResourceGroupName string
+
+	// NodeResourceGroupName is the name of the Azure resource group containing IaaS VMs.
+	NodeResourceGroupName string
+
+	// VnetSubnetID is the Azure Resource ID for the subnet which should contain nodes.
+	VnetSubnetID string
 
 	// Location is a string matching one of the canonical Azure region names. Examples: "westus2", "eastus".
 	Location string
@@ -74,6 +82,7 @@ type Spec struct {
 	DNSServiceIP *string
 }
 
+// PoolSpec contains agent pool specification details.
 type PoolSpec struct {
 	Name         string
 	SKU          string
@@ -83,20 +92,29 @@ type PoolSpec struct {
 
 // Get fetches a managed cluster from Azure.
 func (s *Service) Get(ctx context.Context, spec interface{}) (interface{}, error) {
+	ctx, span := tele.Tracer().Start(ctx, "managedclusters.Service.Get")
+	defer span.End()
+
 	managedClusterSpec, ok := spec.(*Spec)
 	if !ok {
 		return nil, errors.New("expected managed cluster specification")
 	}
-	return s.Client.Get(ctx, managedClusterSpec.ResourceGroup, managedClusterSpec.Name)
+	return s.Client.Get(ctx, managedClusterSpec.ResourceGroupName, managedClusterSpec.Name)
 }
 
 // GetCredentials fetches a managed cluster kubeconfig from Azure.
 func (s *Service) GetCredentials(ctx context.Context, group, name string) ([]byte, error) {
+	ctx, span := tele.Tracer().Start(ctx, "managedclusters.Service.GetCredentials")
+	defer span.End()
+
 	return s.Client.GetCredentials(ctx, group, name)
 }
 
 // Reconcile idempotently creates or updates a managed cluster, if possible.
 func (s *Service) Reconcile(ctx context.Context, spec interface{}) error {
+	ctx, span := tele.Tracer().Start(ctx, "managedclusters.Service.Reconcile")
+	defer span.End()
+
 	managedClusterSpec, ok := spec.(*Spec)
 	if !ok {
 		return errors.New("expected managed cluster specification")
@@ -108,6 +126,7 @@ func (s *Service) Reconcile(ctx context.Context, spec interface{}) error {
 		},
 		Location: &managedClusterSpec.Location,
 		ManagedClusterProperties: &containerservice.ManagedClusterProperties{
+			NodeResourceGroup: &managedClusterSpec.NodeResourceGroupName,
 			DNSPrefix:         &managedClusterSpec.Name,
 			KubernetesVersion: &managedClusterSpec.Version,
 			LinuxProfile: &containerservice.LinuxProfile{
@@ -162,11 +181,12 @@ func (s *Service) Reconcile(ctx context.Context, spec interface{}) error {
 			OsDiskSizeGB: &pool.OSDiskSizeGB,
 			Count:        &pool.Replicas,
 			Type:         containerservice.VirtualMachineScaleSets,
+			VnetSubnetID: &managedClusterSpec.VnetSubnetID,
 		}
 		*properties.AgentPoolProfiles = append(*properties.AgentPoolProfiles, profile)
 	}
 
-	existingMC, err := s.Client.Get(ctx, managedClusterSpec.ResourceGroup, managedClusterSpec.Name)
+	existingMC, err := s.Client.Get(ctx, managedClusterSpec.ResourceGroupName, managedClusterSpec.Name)
 	if err != nil && !azure.ResourceNotFound(err) {
 		return errors.Wrapf(err, "failed to get existing managed cluster")
 	} else if !azure.ResourceNotFound(err) {
@@ -177,9 +197,9 @@ func (s *Service) Reconcile(ctx context.Context, spec interface{}) error {
 		}
 	}
 
-	err = s.Client.CreateOrUpdate(ctx, managedClusterSpec.ResourceGroup, managedClusterSpec.Name, properties)
+	err = s.Client.CreateOrUpdate(ctx, managedClusterSpec.ResourceGroupName, managedClusterSpec.Name, properties)
 	if err != nil {
-		return fmt.Errorf("failed to create or update managed cluster, %#+v", err)
+		return fmt.Errorf("failed to create or update managed cluster, %w", err)
 	}
 
 	return nil
@@ -187,19 +207,22 @@ func (s *Service) Reconcile(ctx context.Context, spec interface{}) error {
 
 // Delete deletes the virtual network with the provided name.
 func (s *Service) Delete(ctx context.Context, spec interface{}) error {
+	ctx, span := tele.Tracer().Start(ctx, "managedclusters.Service.Delete")
+	defer span.End()
+
 	managedClusterSpec, ok := spec.(*Spec)
 	if !ok {
 		return errors.New("expected managed cluster specification")
 	}
 
 	klog.V(2).Infof("Deleting managed cluster  %s ", managedClusterSpec.Name)
-	err := s.Client.Delete(ctx, managedClusterSpec.ResourceGroup, managedClusterSpec.Name)
+	err := s.Client.Delete(ctx, managedClusterSpec.ResourceGroupName, managedClusterSpec.Name)
 	if err != nil {
 		if azure.ResourceNotFound(err) {
 			// already deleted
 			return nil
 		}
-		return errors.Wrapf(err, "failed to delete managed cluster %s in resource group %s", managedClusterSpec.Name, managedClusterSpec.ResourceGroup)
+		return errors.Wrapf(err, "failed to delete managed cluster %s in resource group %s", managedClusterSpec.Name, managedClusterSpec.ResourceGroupName)
 	}
 
 	klog.V(2).Infof("successfully deleted managed cluster %s ", managedClusterSpec.Name)

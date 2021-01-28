@@ -52,7 +52,10 @@ Each version of Cluster API for Azure will attempt to support at least two Kuber
 
 ## Documentation
 
-Documentation is in the `/docs` directory, and the [index is here](https://github.com/kubernetes-sigs/cluster-api-provider-azure/blob/master/docs/README.md).
+Please see our [Book](https://capz.sigs.k8s.io) for in-depth user documentation.
+
+Additional docs can be found in the `/docs` directory, and the [index is here](https://github.com/kubernetes-sigs/cluster-api-provider-azure/blob/master/docs/README.md).
+
 
 ## Getting involved and contributing
 
@@ -79,10 +82,10 @@ do!
 
 This repository uses the Kubernetes bots.  See a full list of the commands [here][prow].
 
-### Implementer office hours
+### Office hours
 
-Maintainers hold office hours every two weeks, with sessions open to all
-developers working on this project.
+The community holds office hours every two weeks, with sessions open to all users and
+developers.
 
 Office hours are hosted on a zoom video chat every other Thursday
 at 08:00 (PT) / 11:00 (ET) / 16:00 (UTC),
@@ -106,7 +109,7 @@ If you think you have found a bug please follow the instructions below.
 
 ### Tracking new features
 
-We also use the issue tracker to track features. If you have an idea for a feature, or think you can help kops become even more awesome follow the steps below.
+We also use the issue tracker to track features. If you have an idea for a feature, or think you can help Cluster API Provider Azure become even more awesome, then follow the steps below.
 
 - Open a [feature request][feature_request].
 - Remember users might be searching for your issue in the future, so please

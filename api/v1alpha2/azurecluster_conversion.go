@@ -21,6 +21,7 @@ import (
 
 	apiconversion "k8s.io/apimachinery/pkg/conversion"
 	infrav1alpha3 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
+	v1alpha3 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	utilconversion "sigs.k8s.io/cluster-api/util/conversion"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 )
@@ -60,6 +61,7 @@ func (src *AzureCluster) ConvertTo(dstRaw conversion.Hub) error { // nolint
 
 	dst.Status.FailureDomains = restored.Status.FailureDomains
 	dst.Spec.NetworkSpec.Vnet.CIDRBlocks = restored.Spec.NetworkSpec.Vnet.CIDRBlocks
+	dst.Spec.IdentityRef = restored.Spec.IdentityRef
 
 	for _, restoredSubnet := range restored.Spec.NetworkSpec.Subnets {
 		if restoredSubnet != nil {
@@ -72,6 +74,8 @@ func (src *AzureCluster) ConvertTo(dstRaw conversion.Hub) error { // nolint
 			}
 		}
 	}
+
+	dst.Spec.NetworkSpec.APIServerLB = restored.Spec.NetworkSpec.APIServerLB
 
 	// Manually convert conditions
 	dst.SetConditions(restored.GetConditions())
@@ -159,11 +163,6 @@ func Convert_v1alpha3_AzureClusterStatus_To_v1alpha2_AzureClusterStatus(in *infr
 	}
 
 	return nil
-}
-
-// Convert_v1alpha2_Network_To_v1alpha3_Network.
-func Convert_v1alpha2_Network_To_v1alpha3_Network(in *Network, out *infrav1alpha3.Network, s apiconversion.Scope) error { //nolint
-	return autoConvert_v1alpha2_Network_To_v1alpha3_Network(in, out, s)
 }
 
 // Convert_v1alpha2_NetworkSpec_To_v1alpha3_NetworkSpec.
@@ -263,4 +262,9 @@ func Convert_v1alpha2_IngressRule_To_v1alpha3_IngressRule(in *IngressRule, out *
 // Convert_v1alpha3_IngressRule_To_v1alpha2_IngressRule
 func Convert_v1alpha3_IngressRule_To_v1alpha2_IngressRule(in *infrav1alpha3.IngressRule, out *IngressRule, s apiconversion.Scope) error {
 	return autoConvert_v1alpha3_IngressRule_To_v1alpha2_IngressRule(in, out, s)
+}
+
+// Convert_v1alpha3_ManagedDisk_To_v1alpha2_ManagedDisk converts between api versions
+func Convert_v1alpha3_ManagedDisk_To_v1alpha2_ManagedDisk(in *v1alpha3.ManagedDisk, out *ManagedDisk, s apiconversion.Scope) error {
+	return autoConvert_v1alpha3_ManagedDisk_To_v1alpha2_ManagedDisk(in, out, s)
 }

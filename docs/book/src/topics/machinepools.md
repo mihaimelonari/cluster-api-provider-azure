@@ -32,7 +32,7 @@
 *Source: [MachinePool API Proposal](https://github.com/kubernetes-sigs/cluster-api/blob/bf51a2502f9007b531f6a9a2c1a4eae1586fb8ca/docs/proposals/20190919-machinepool-api.md)*
 
 ## AzureMachinePool
-Cluster API Provider Azure (CAPZ) has experimental support for `MachinePool` though the infrastructure
+Cluster API Provider Azure (CAPZ) has experimental support for `MachinePool` through the infrastructure
 type `AzureMachinePool`. An `AzureMachinePool` corresponds to an [Azure Virtual Machine Scale Set](https://docs.microsoft.com/en-us/azure/virtual-machine-scale-sets/overview),
 which provides the cloud provider specific resource for orchestrating a group of Virtual Machines.
 
@@ -45,7 +45,7 @@ for that.
 Make sure to set up your Azure environment as described [here](https://cluster-api.sigs.k8s.io/user/quick-start.html).
 
 ```shell
-clusterctl config cluster my-cluster --kubernetes-version v1.18.8 --flavor machinepool > my-cluster.yaml
+clusterctl config cluster my-cluster --kubernetes-version v1.19.7 --flavor machinepool > my-cluster.yaml
 ```
 
 The template used for this [flavor](https://cluster-api.sigs.k8s.io/clusterctl/commands/config-cluster.html#flavors)
@@ -75,7 +75,7 @@ spec:
         apiVersion: exp.infrastructure.cluster.x-k8s.io/v1alpha3
         kind: AzureMachinePool
         name: capz-mp-0
-      version: v1.18.8
+      version: v1.19.7
 ---
 apiVersion: exp.infrastructure.cluster.x-k8s.io/v1alpha3
 kind: AzureMachinePool

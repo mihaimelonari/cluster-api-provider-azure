@@ -21,15 +21,41 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2019-05-01/resources"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/converters"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
+
+// Service provides operations on azure resources
+type Service struct {
+	Scope GroupScope
+	client
+}
+
+// GroupScope defines the scope interface for a group service.
+type GroupScope interface {
+	logr.Logger
+	azure.ClusterDescriber
+}
+
+// New creates a new service.
+func New(scope GroupScope) *Service {
+	return &Service{
+		Scope:  scope,
+		client: newClient(scope),
+	}
+}
 
 // Reconcile gets/creates/updates a resource group.
 func (s *Service) Reconcile(ctx context.Context) error {
-	if _, err := s.Client.Get(ctx, s.Scope.ResourceGroup()); err == nil {
+	ctx, span := tele.Tracer().Start(ctx, "groups.Service.Reconcile")
+	defer span.End()
+
+	if _, err := s.client.Get(ctx, s.Scope.ResourceGroup()); err == nil {
 		// resource group already exists, skip creation
 		return nil
 	}
@@ -45,7 +71,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		})),
 	}
 
-	_, err := s.Client.CreateOrUpdate(ctx, s.Scope.ResourceGroup(), group)
+	_, err := s.client.CreateOrUpdate(ctx, s.Scope.ResourceGroup(), group)
 	if err != nil {
 		return errors.Wrapf(err, "failed to create resource group %s", s.Scope.ResourceGroup())
 	}
@@ -56,7 +82,14 @@ func (s *Service) Reconcile(ctx context.Context) error {
 
 // Delete deletes the resource group with the provided name.
 func (s *Service) Delete(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "groups.Service.Delete")
+	defer span.End()
+
 	managed, err := s.IsGroupManaged(ctx)
+	if err != nil && azure.ResourceNotFound(err) {
+		// already deleted or doesn't exist
+		return nil
+	}
 	if err != nil {
 		return errors.Wrap(err, "could not get resource group management state")
 	}
@@ -67,7 +100,7 @@ func (s *Service) Delete(ctx context.Context) error {
 	}
 
 	s.Scope.V(2).Info("deleting resource group", "resource group", s.Scope.ResourceGroup())
-	err = s.Client.Delete(ctx, s.Scope.ResourceGroup())
+	err = s.client.Delete(ctx, s.Scope.ResourceGroup())
 	if err != nil && azure.ResourceNotFound(err) {
 		// already deleted
 		return nil
@@ -83,7 +116,10 @@ func (s *Service) Delete(ctx context.Context) error {
 // IsGroupManaged returns true if the resource group has an owned tag with the cluster name as value,
 // meaning that the resource group's lifecycle is managed.
 func (s *Service) IsGroupManaged(ctx context.Context) (bool, error) {
-	group, err := s.Client.Get(ctx, s.Scope.ResourceGroup())
+	ctx, span := tele.Tracer().Start(ctx, "groups.Service.IsGroupManaged")
+	defer span.End()
+
+	group, err := s.client.Get(ctx, s.Scope.ResourceGroup())
 	if err != nil {
 		return false, err
 	}

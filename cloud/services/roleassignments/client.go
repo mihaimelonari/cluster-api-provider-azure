@@ -21,32 +21,33 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/profiles/2019-03-01/authorization/mgmt/authorization"
 	"github.com/Azure/go-autorest/autorest"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
-// Client wraps go-sdk
-type Client interface {
+// client wraps go-sdk
+type client interface {
 	Create(context.Context, string, string, authorization.RoleAssignmentCreateParameters) (authorization.RoleAssignment, error)
 }
 
-// AzureClient contains the Azure go-sdk Client
-type AzureClient struct {
+// azureClient contains the Azure go-sdk Client
+type azureClient struct {
 	roleassignments authorization.RoleAssignmentsClient
 }
 
-var _ Client = &AzureClient{}
+var _ client = (*azureClient)(nil)
 
-// NewClient creates a new role assignment client from subscription ID.
-func NewClient(auth azure.Authorizer) *AzureClient {
+// newClient creates a new role assignment client from subscription ID.
+func newClient(auth azure.Authorizer) *azureClient {
 	c := newRoleAssignmentClient(auth.SubscriptionID(), auth.BaseURI(), auth.Authorizer())
-	return &AzureClient{c}
+	return &azureClient{c}
 }
 
 // newRoleAssignmentClient creates a role assignments client from subscription ID.
 func newRoleAssignmentClient(subscriptionID string, baseURI string, authorizer autorest.Authorizer) authorization.RoleAssignmentsClient {
 	roleClient := authorization.NewRoleAssignmentsClientWithBaseURI(baseURI, subscriptionID)
-	roleClient.Authorizer = authorizer
-	roleClient.AddToUserAgent(azure.UserAgent())
+	azure.SetAutoRestClientDefaults(&roleClient.Client, authorizer)
 	return roleClient
 }
 
@@ -59,6 +60,9 @@ func newRoleAssignmentClient(subscriptionID string, baseURI string, authorizer a
 // for a resource.
 // roleAssignmentName - the name of the role assignment to create. It can be any valid GUID.
 // parameters - parameters for the role assignment.
-func (ac *AzureClient) Create(ctx context.Context, scope string, roleAssignmentName string, parameters authorization.RoleAssignmentCreateParameters) (authorization.RoleAssignment, error) {
+func (ac *azureClient) Create(ctx context.Context, scope string, roleAssignmentName string, parameters authorization.RoleAssignmentCreateParameters) (authorization.RoleAssignment, error) {
+	ctx, span := tele.Tracer().Start(ctx, "roleassignments.AzureClient.Create")
+	defer span.End()
+
 	return ac.roleassignments.Create(ctx, scope, roleAssignmentName, parameters)
 }

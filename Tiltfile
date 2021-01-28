@@ -12,10 +12,10 @@ settings = {
     "deploy_cert_manager": True,
     "preload_images_for_kind": True,
     "kind_cluster_name": "capz",
-    "capi_version": "v0.3.10",
+    "capi_version": "v0.3.13",
     "cert_manager_version": "v0.16.1",
-    "kubernetes_version": "v1.18.8",
-    "aks_kubernetes_version": "v1.17.7"
+    "kubernetes_version": "v1.19.7",
+    "aks_kubernetes_version": "v1.18.8"
 }
 
 keys = ["AZURE_SUBSCRIPTION_ID_B64", "AZURE_TENANT_ID_B64", "AZURE_CLIENT_SECRET_B64", "AZURE_CLIENT_ID_B64"]
@@ -34,41 +34,6 @@ if "allowed_contexts" in settings:
 
 if "default_registry" in settings:
     default_registry(settings.get("default_registry"))
-
-
-# Prepull all the cert-manager images to your local environment and then load them directly into kind. This speeds up
-# setup if you're repeatedly destroying and recreating your kind cluster, as it doesn't have to pull the images over
-# the network each time.
-def deploy_cert_manager():
-    registry = settings.get("cert_manager_registry", "quay.io/jetstack")
-    version = settings.get("cert_manager_version")
-
-    # check if cert-mamager is already installed, otherwise pre-load images & apply the manifest
-    # NB. this is required until https://github.com/jetstack/cert-manager/issues/3121 is addressed otherwise
-    # when applying the manifest twice to same cluster kubectl get stuck
-    existsCheck = str(local("kubectl get namespaces"))
-    if existsCheck.find("cert-manager") == -1:
-        # pre-load cert-manager images in kind
-        images = ["cert-manager-controller", "cert-manager-cainjector", "cert-manager-webhook"]
-        if settings.get("preload_images_for_kind"):
-            for image in images:
-                local("docker pull {}/{}:{}".format(registry, image, version))
-                local("kind load docker-image --name {} {}/{}:{}".format(settings.get("kind_cluster_name"), registry, image, version))
-
-        # apply the cert-manager manifest
-        local("kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/{}/cert-manager.yaml".format(version))
-
-    # verifies cert-manager is properly working (https://cert-manager.io/docs/installation/kubernetes/#verifying-the-installation)
-    # 1. wait for the cert-manager to be running
-    local("kubectl wait --for=condition=Available --timeout=300s -n cert-manager deployment/cert-manager")
-    local("kubectl wait --for=condition=Available --timeout=300s -n cert-manager deployment/cert-manager-cainjector")
-    local("kubectl wait --for=condition=Available --timeout=300s -n cert-manager deployment/cert-manager-webhook")
-
-    # 2. create a test certificate
-    local("cat << EOF | kubectl apply -f - " + cert_manager_test_resources + "EOF")
-    local("kubectl wait --for=condition=Ready --timeout=300s -n cert-manager-test certificate/selfsigned-cert ")
-    local("cat << EOF | kubectl delete -f - " + cert_manager_test_resources + "EOF")
-
 
 # deploy CAPI
 def deploy_capi():
@@ -149,7 +114,7 @@ def validate_auth():
 
 tilt_helper_dockerfile_header = """
 # Tilt image
-FROM golang:1.13.15 as tilt-helper
+FROM golang:1.15.3 as tilt-helper
 # Support live reloading with Tilt
 RUN wget --output-document /restart.sh --quiet https://raw.githubusercontent.com/windmilleng/rerun-process-wrapper/master/restart.sh  && \
     wget --output-document /start.sh --quiet https://raw.githubusercontent.com/windmilleng/rerun-process-wrapper/master/start.sh && \
@@ -164,39 +129,12 @@ COPY --from=tilt-helper /restart.sh .
 COPY manager .
 """
 
-cert_manager_test_resources = """
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cert-manager-test
----
-apiVersion: cert-manager.io/v1alpha2
-kind: Issuer
-metadata:
-  name: test-selfsigned
-  namespace: cert-manager-test
-spec:
-  selfSigned: {}
----
-apiVersion: cert-manager.io/v1alpha2
-kind: Certificate
-metadata:
-  name: selfsigned-cert
-  namespace: cert-manager-test
-spec:
-  dnsNames:
-    - example.com
-  secretName: selfsigned-cert-tls
-  issuerRef:
-    name: test-selfsigned
-"""
-
 # Build CAPZ and add feature gates
 def capz():
     # Apply the kustomized yaml for this provider
     substitutions = settings.get("kustomize_substitutions", {})
     os.environ.update(substitutions)
-    yaml = str(kustomizesub("./config"))
+    yaml = str(kustomizesub("./hack/observability")) # build an observable kind deployment by default
 
 
     # add extra_args if they are defined
@@ -258,12 +196,24 @@ def capz():
 
     k8s_yaml(blob(yaml))
 
-def calico_crs():
+def create_crs():
+    # create config maps
     local("kubectl delete configmaps calico-addon --ignore-not-found=true")
     local("kubectl create configmap calico-addon --from-file=templates/addons/calico.yaml")
     local("kubectl delete configmaps calico-ipv6-addon --ignore-not-found=true")
     local("kubectl create configmap calico-ipv6-addon --from-file=templates/addons/calico-ipv6.yaml")
+    local("kubectl delete configmaps flannel-windows-addon --ignore-not-found=true")
+
+    # need to set version for kube-proxy on windows.  
+    # This file is processed then reapply \\ due to the named pipes which need to be escaped for a bug in envsubst library
+	# https://github.com/kubernetes-sigs/cluster-api/issues/4016
+    os.putenv("KUBERNETES_VERSION", settings.get("kubernetes_version", {}))
+    local("kubectl create configmap flannel-windows-addon --from-file=templates/addons/windows/ --dry-run=client -o yaml | " + envsubst_cmd + " | sed -e 's/\\\\/\\\\\\\\/' | kubectl apply -f -")
+
+    # set up crs
+    local("kubectl wait --for=condition=Available --timeout=300s -n capi-webhook-system deployment/capi-controller-manager")
     local("kubectl apply -f templates/addons/calico-resource-set.yaml")
+    local("kubectl apply -f templates/addons/flannel-resource-set.yaml")
 
 # run worker clusters specified from 'tilt up' or in 'tilt_config.json'
 def flavors():
@@ -279,27 +229,29 @@ def flavors():
 
     ssh_pub_key = "AZURE_SSH_PUBLIC_KEY_B64"
     ssh_pub_key_path = "~/.ssh/id_rsa.pub"
-    if not substitutions.get(ssh_pub_key):
-        print("{} was not specified in tilt_config.json, attempting to load {}".format(ssh_pub_key, ssh_pub_key_path))
-        substitutions[ssh_pub_key] = base64_encode_file(ssh_pub_key_path)
-
-    for flavor in cfg.get("worker-flavors", []):
-        if flavor not in worker_templates:
-            worker_templates.append(flavor)
-    for flavor in worker_templates:
-        deploy_worker_templates(flavor, substitutions)
-
-
-def deploy_worker_templates(flavor, substitutions):
-    # validate flavor exists
-    if flavor == "default":
-        yaml_file = "./templates/cluster-template.yaml"
+    if substitutions.get(ssh_pub_key):
+        os.environ.update({ssh_pub_key: substitutions.get(ssh_pub_key)})
     else:
-        yaml_file = "./templates/cluster-template-" + flavor + ".yaml"
-        if not os.path.exists(yaml_file):
-            fail(yaml_file + " not found")
+        print("{} was not specified in tilt_config.json, attempting to load {}".format(ssh_pub_key, ssh_pub_key_path))
+        os.environ.update({ssh_pub_key: base64_encode_file(ssh_pub_key_path)})
 
-    yaml = str(read_file(yaml_file))
+    templatelist = [ item for item in listdir("./templates") ]
+    for template in templatelist:
+        if template not in worker_templates and os.path.basename(template).startswith("cluster-template"):
+            worker_templates.append(template)
+    for template in worker_templates:
+        deploy_worker_templates(template, substitutions)
+
+
+def deploy_worker_templates(template, substitutions):
+    # validate template exists
+    if not os.path.exists(template):
+        fail(template + " not found")
+
+    yaml = str(read_file(template))
+    flavor = os.path.basename(template).replace("cluster-template-", "").replace(".yaml", "")
+    # for the base cluster-template, flavor is "default"
+    flavor = os.path.basename(flavor).replace("cluster-template", "default")
 
     # azure account and ssh replacements
     for substitution in substitutions:
@@ -323,8 +275,9 @@ def deploy_worker_templates(flavor, substitutions):
                 yaml = yaml.replace("${" + substitution + "}", value)
 
     # programmatically define any remaining vars
+    # "windows" can not be for cluster name because it sets the dns to trademarked name during reconciliation
     substitutions = {
-        "CLUSTER_NAME": flavor + "-template",
+        "CLUSTER_NAME": flavor.replace("windows", "win") + "-template",
         "AZURE_LOCATION": "eastus",
         "AZURE_VNET_NAME": flavor + "-template-vnet",
         "AZURE_RESOURCE_GROUP": flavor + "-template-rg",
@@ -347,8 +300,8 @@ def deploy_worker_templates(flavor, substitutions):
     yaml = yaml.replace('"', '\\"')     # add escape character to double quotes in yaml
 
     local_resource(
-        "worker-" + flavor,
-        cmd = "make generate-flavors; echo \"" + yaml + "\" > ./.tiltbuild/worker-" + flavor + ".yaml; cat ./.tiltbuild/worker-" + flavor + ".yaml | " + envsubst_cmd + " | kubectl apply -f -",
+        os.path.basename(flavor),
+        cmd = "make generate-flavors; echo \"" + yaml + "\" > ./.tiltbuild/" + flavor + "; cat ./.tiltbuild/" + flavor + " | " + envsubst_cmd + " | kubectl apply -f -",
         auto_init = False,
         trigger_mode = TRIGGER_MODE_MANUAL
     )
@@ -384,6 +337,8 @@ validate_auth()
 
 include_user_tilt_files()
 
+load("ext://cert_manager", "deploy_cert_manager")
+
 if settings.get("deploy_cert_manager"):
     deploy_cert_manager()
 
@@ -391,6 +346,6 @@ deploy_capi()
 
 capz()
 
-calico_crs()
+create_crs()
 
 flavors()

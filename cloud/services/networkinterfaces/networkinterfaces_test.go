@@ -25,7 +25,7 @@ import (
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
 	gomockinternal "sigs.k8s.io/cluster-api-provider-azure/internal/test/matchers/gomock"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-06-01/network"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -69,8 +69,8 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				gomock.InOrder(
-					m.Get(context.TODO(), "my-rg", "nic-1"),
-					m.Get(context.TODO(), "my-rg", "nic-2"))
+					m.Get(gomockinternal.AContext(), "my-rg", "nic-1"),
+					m.Get(gomockinternal.AContext(), "my-rg", "nic-2"))
 			},
 		},
 		{
@@ -93,9 +93,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				gomock.InOrder(
-					m.Get(context.TODO(), "my-rg", "my-net-interface").
+					m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 						Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found")),
-					m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomock.AssignableToTypeOf(network.Interface{})).
+					m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomock.AssignableToTypeOf(network.Interface{})).
 						Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 500}, "Internal Server Error")))
 			},
 		},
@@ -122,9 +122,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
-				m.Get(context.TODO(), "my-rg", "my-net-interface").
+				m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
-				m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+				m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 					Location: to.StringPtr("fake-location"),
 					InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 						EnableAcceleratedNetworking: to.BoolPtr(true),
@@ -166,9 +166,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(3)).AnyTimes().Return(klogr.New())
 				gomock.InOrder(
-					m.Get(context.TODO(), "my-rg", "my-net-interface").
+					m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 						Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found")),
-					m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+					m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 						Location: to.StringPtr("fake-location"),
 						InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 							EnableAcceleratedNetworking: to.BoolPtr(true),
@@ -211,9 +211,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(3)).AnyTimes().Return(klogr.New())
-				m.Get(context.TODO(), "my-rg", "my-net-interface").
+				m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
-				m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+				m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 					Location: to.StringPtr("fake-location"),
 					InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 						EnableAcceleratedNetworking: to.BoolPtr(true),
@@ -255,9 +255,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(3)).AnyTimes().Return(klogr.New())
-				m.Get(context.TODO(), "my-rg", "my-public-net-interface").
+				m.Get(gomockinternal.AContext(), "my-rg", "my-public-net-interface").
 					Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
-				m.CreateOrUpdate(context.TODO(), "my-rg", "my-public-net-interface", gomock.AssignableToTypeOf(network.Interface{}))
+				m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-public-net-interface", gomock.AssignableToTypeOf(network.Interface{}))
 			},
 		},
 		{
@@ -280,9 +280,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
-				m.Get(context.TODO(), "my-rg", "my-net-interface").
+				m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
-				m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+				m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 					Location: to.StringPtr("fake-location"),
 					InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 						EnableAcceleratedNetworking: to.BoolPtr(true),
@@ -323,9 +323,9 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
-				m.Get(context.TODO(), "my-rg", "my-net-interface").
+				m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
-				m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+				m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 					Location: to.StringPtr("fake-location"),
 					InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 						EnableAcceleratedNetworking: to.BoolPtr(false),
@@ -366,11 +366,10 @@ func TestReconcileNetworkInterface(t *testing.T) {
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.Location().AnyTimes().Return("fake-location")
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
-				s.IsIPv6Enabled().AnyTimes().Return(true)
 				gomock.InOrder(
-					m.Get(context.TODO(), "my-rg", "my-net-interface").
+					m.Get(gomockinternal.AContext(), "my-rg", "my-net-interface").
 						Return(network.Interface{}, autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found")),
-					m.CreateOrUpdate(context.TODO(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
+					m.CreateOrUpdate(gomockinternal.AContext(), "my-rg", "my-net-interface", gomockinternal.DiffEq(network.Interface{
 						Location: to.StringPtr("fake-location"),
 						InterfacePropertiesFormat: &network.InterfacePropertiesFormat{
 							EnableAcceleratedNetworking: to.BoolPtr(true),
@@ -415,7 +414,7 @@ func TestReconcileNetworkInterface(t *testing.T) {
 			s := &Service{
 				Scope:  scopeMock,
 				Client: clientMock,
-				ResourceSKUCache: resourceskus.NewStaticCache([]compute.ResourceSku{
+				resourceSKUCache: resourceskus.NewStaticCache([]compute.ResourceSku{
 					{
 						Name: to.StringPtr("Standard_D2v2"),
 						Kind: to.StringPtr(string(resourceskus.VirtualMachines)),
@@ -441,7 +440,7 @@ func TestReconcileNetworkInterface(t *testing.T) {
 			err := s.Reconcile(context.TODO())
 			if tc.expectedError != "" {
 				g.Expect(err).To(HaveOccurred())
-				fmt.Printf(cmp.Diff(err.Error(), tc.expectedError))
+				fmt.Print(cmp.Diff(err.Error(), tc.expectedError))
 
 				g.Expect(err.Error()).To(Equal(tc.expectedError))
 			} else {
@@ -470,7 +469,7 @@ func TestDeleteNetworkInterface(t *testing.T) {
 				})
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.ResourceGroup().AnyTimes().Return("my-rg")
-				m.Delete(context.TODO(), "my-rg", "my-net-interface")
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-net-interface")
 			},
 		},
 		{
@@ -486,7 +485,7 @@ func TestDeleteNetworkInterface(t *testing.T) {
 				})
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.ResourceGroup().AnyTimes().Return("my-rg")
-				m.Delete(context.TODO(), "my-rg", "my-net-interface").
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not found"))
 			},
 		},
@@ -503,7 +502,7 @@ func TestDeleteNetworkInterface(t *testing.T) {
 				})
 				s.ResourceGroup().AnyTimes().Return("my-rg")
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
-				m.Delete(context.TODO(), "my-rg", "my-net-interface").
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-net-interface").
 					Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 500}, "Internal Server Error"))
 			},
 		},
