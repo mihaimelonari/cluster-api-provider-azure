@@ -22,39 +22,40 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-06-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
-// getExisting provides information about an existing subnet.
-func (s *Service) getExisting(ctx context.Context, rgName string, spec azure.SubnetSpec) (*infrav1.SubnetSpec, error) {
-	subnet, err := s.Client.Get(ctx, rgName, spec.VNetName, spec.Name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to fetch subnet named %s in vnet %s", spec.VNetName, spec.Name)
-	}
+// SubnetScope defines the scope interface for a subnet service.
+type SubnetScope interface {
+	logr.Logger
+	azure.ClusterScoper
+	SubnetSpecs() []azure.SubnetSpec
+}
 
-	var addresses []string
-	if subnet.SubnetPropertiesFormat != nil && subnet.SubnetPropertiesFormat.AddressPrefix != nil {
-		addresses = []string{to.String(subnet.SubnetPropertiesFormat.AddressPrefix)}
-	} else if subnet.SubnetPropertiesFormat != nil && subnet.SubnetPropertiesFormat.AddressPrefixes != nil {
-		addresses = to.StringSlice(subnet.SubnetPropertiesFormat.AddressPrefixes)
-	}
+// Service provides operations on azure resources
+type Service struct {
+	Scope SubnetScope
+	Client
+}
 
-	subnetSpec := &infrav1.SubnetSpec{
-		Role:                spec.Role,
-		InternalLBIPAddress: spec.InternalLBIPAddress,
-		Name:                to.String(subnet.Name),
-		ID:                  to.String(subnet.ID),
-		CIDRBlocks:          addresses,
+// New creates a new service.
+func New(scope SubnetScope) *Service {
+	return &Service{
+		Scope:  scope,
+		Client: NewClient(scope),
 	}
-
-	return subnetSpec, nil
 }
 
 // Reconcile gets/creates/updates a subnet.
 func (s *Service) Reconcile(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "subnets.Service.Reconcile")
+	defer span.End()
+
 	for _, subnetSpec := range s.Scope.SubnetSpecs() {
 		existingSubnet, err := s.getExisting(ctx, s.Scope.Vnet().ResourceGroup, subnetSpec)
 		switch {
@@ -128,6 +129,9 @@ func (s *Service) Reconcile(ctx context.Context) error {
 
 // Delete deletes the subnet with the provided name.
 func (s *Service) Delete(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "subnets.Service.Delete")
+	defer span.End()
+
 	for _, subnetSpec := range s.Scope.SubnetSpecs() {
 		if !s.Scope.Vnet().IsManaged(s.Scope.ClusterName()) {
 			s.Scope.V(4).Info("Skipping subnets deletion in custom vnet mode")
@@ -146,4 +150,31 @@ func (s *Service) Delete(ctx context.Context) error {
 		s.Scope.V(2).Info("successfully deleted subnet in vnet", "subnet", subnetSpec.Name, "vnet", subnetSpec.VNetName)
 	}
 	return nil
+}
+
+// getExisting provides information about an existing subnet.
+func (s *Service) getExisting(ctx context.Context, rgName string, spec azure.SubnetSpec) (*infrav1.SubnetSpec, error) {
+	ctx, span := tele.Tracer().Start(ctx, "subnets.Service.getExisting")
+	defer span.End()
+
+	subnet, err := s.Client.Get(ctx, rgName, spec.VNetName, spec.Name)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to fetch subnet named %s in vnet %s", spec.VNetName, spec.Name)
+	}
+
+	var addresses []string
+	if subnet.SubnetPropertiesFormat != nil && subnet.SubnetPropertiesFormat.AddressPrefix != nil {
+		addresses = []string{to.String(subnet.SubnetPropertiesFormat.AddressPrefix)}
+	} else if subnet.SubnetPropertiesFormat != nil && subnet.SubnetPropertiesFormat.AddressPrefixes != nil {
+		addresses = to.StringSlice(subnet.SubnetPropertiesFormat.AddressPrefixes)
+	}
+
+	subnetSpec := &infrav1.SubnetSpec{
+		Role:       spec.Role,
+		Name:       to.String(subnet.Name),
+		ID:         to.String(subnet.ID),
+		CIDRBlocks: addresses,
+	}
+
+	return subnetSpec, nil
 }

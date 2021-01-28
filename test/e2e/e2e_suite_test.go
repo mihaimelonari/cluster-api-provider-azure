@@ -19,24 +19,33 @@ limitations under the License.
 package e2e
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	aadpodv1 "github.com/Azure/aad-pod-identity/pkg/apis/aadpodidentity/v1"
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
 	"github.com/onsi/ginkgo/reporters"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	capi_e2e "sigs.k8s.io/cluster-api/test/e2e"
 	"sigs.k8s.io/cluster-api/test/framework"
 	"sigs.k8s.io/cluster-api/test/framework/bootstrap"
 	"sigs.k8s.io/cluster-api/test/framework/clusterctl"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 )
 
 // Test suite flags
@@ -69,13 +78,89 @@ var (
 
 	// bootstrapClusterProxy allows to interact with the bootstrap cluster to be used for the e2e tests.
 	bootstrapClusterProxy framework.ClusterProxy
+
+	// kubetestConfigFilePath is the path to the kubetest configuration file
+	kubetestConfigFilePath string
+
+	// useCIArtifacts specifies whether or not to use the latest build from the main branch of the Kubernetes repository
+	useCIArtifacts bool
 )
+
+type (
+	AzureClusterProxy struct {
+		capi_e2e.ClusterProxy
+	}
+)
+
+func NewAzureClusterProxy(name string, kubeconfigPath string, scheme *runtime.Scheme, options ...framework.Option) *AzureClusterProxy {
+	proxy, ok := framework.NewClusterProxy(name, kubeconfigPath, scheme, options...).(capi_e2e.ClusterProxy)
+	Expect(ok).To(BeTrue(), "framework.NewClusterProxy must implement capi_e2e.ClusterProxy")
+	return &AzureClusterProxy{
+		ClusterProxy: proxy,
+	}
+}
+
+func (acp *AzureClusterProxy) CollectWorkloadClusterLogs(ctx context.Context, namespace, name, outputPath string) {
+	const (
+		kubesystem = "kube-system"
+	)
+
+	Byf("Dumping workload cluster %s/%s logs", namespace, name)
+	acp.ClusterProxy.CollectWorkloadClusterLogs(ctx, namespace, name, outputPath)
+
+	Byf("Dumping workload cluster %s/%s kube-system pod logs", namespace, name)
+	aboveMachinesPath := strings.Replace(outputPath, "/machines", "", 1)
+	workload := acp.GetWorkloadCluster(ctx, namespace, name)
+	pods := &corev1.PodList{}
+	Expect(workload.GetClient().List(ctx, pods, client.InNamespace(kubesystem))).To(Succeed())
+
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			// Watch each container's logs in a goroutine so we can stream them all concurrently.
+			go func(pod corev1.Pod, container corev1.Container) {
+				defer GinkgoRecover()
+
+				Byf("Creating log watcher for controller %s/%s, container %s", kubesystem, pod.Name, container.Name)
+				logFile := path.Join(aboveMachinesPath, kubesystem, pod.Name, container.Name+".log")
+				Expect(os.MkdirAll(filepath.Dir(logFile), 0755)).To(Succeed())
+
+				f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				Expect(err).NotTo(HaveOccurred())
+				defer f.Close()
+
+				opts := &corev1.PodLogOptions{
+					Container: container.Name,
+					Follow:    true,
+				}
+
+				podLogs, err := workload.GetClientSet().CoreV1().Pods(kubesystem).GetLogs(pod.Name, opts).Stream()
+				if err != nil {
+					// Failing to stream logs should not cause the test to fail
+					Byf("Error starting logs stream for pod %s/%s, container %s: %v", kubesystem, pod.Name, container.Name, err)
+					return
+				}
+				defer podLogs.Close()
+
+				out := bufio.NewWriter(f)
+				defer out.Flush()
+				_, err = out.ReadFrom(podLogs)
+				if err != nil && err != io.ErrUnexpectedEOF {
+					// Failing to stream logs should not cause the test to fail
+					Byf("Got error while streaming logs for pod %s/%s, container %s: %v", kubesystem, pod.Name, container.Name, err)
+				}
+			}(pod, container)
+		}
+	}
+}
 
 func init() {
 	flag.StringVar(&configPath, "e2e.config", "", "path to the e2e config file")
 	flag.StringVar(&artifactFolder, "e2e.artifacts-folder", "", "folder where e2e test artifact should be stored")
+	flag.BoolVar(&useCIArtifacts, "kubetest.use-ci-artifacts", false, "use the latest build from the main branch of the Kubernetes repository")
 	flag.BoolVar(&skipCleanup, "e2e.skip-resource-cleanup", false, "if true, the resource cleanup after tests will be skipped")
 	flag.BoolVar(&useExistingCluster, "e2e.use-existing-cluster", false, "if true, the test uses the current cluster instead of creating a new one (default discovery rules apply)")
+	flag.StringVar(&kubetestConfigFilePath, "kubetest.config-file", "", "path to the kubetest configuration file")
+
 }
 
 func TestE2E(t *testing.T) {
@@ -128,7 +213,8 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	kubeconfigPath := parts[3]
 
 	e2eConfig = loadE2EConfig(configPath)
-	bootstrapClusterProxy = framework.NewClusterProxy("bootstrap", kubeconfigPath, initScheme())
+	bootstrapClusterProxy = NewAzureClusterProxy("bootstrap", kubeconfigPath, initScheme(),
+		framework.WithMachineLogCollector(AzureLogCollector{}))
 })
 
 // Using a SynchronizedAfterSuite for controlling how to delete resources shared across ParallelNodes (~ginkgo threads).
@@ -149,6 +235,19 @@ func initScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	framework.TryAddDefaultSchemes(scheme)
 	Expect(infrav1.AddToScheme(scheme)).To(Succeed())
+	// Add aadpodidentity v1 to the scheme.
+	aadPodIdentityGroupVersion := schema.GroupVersion{Group: aadpodv1.CRDGroup, Version: aadpodv1.CRDVersion}
+	scheme.AddKnownTypes(aadPodIdentityGroupVersion,
+		&aadpodv1.AzureIdentity{},
+		&aadpodv1.AzureIdentityList{},
+		&aadpodv1.AzureIdentityBinding{},
+		&aadpodv1.AzureIdentityBindingList{},
+		&aadpodv1.AzureAssignedIdentity{},
+		&aadpodv1.AzureAssignedIdentityList{},
+		&aadpodv1.AzurePodIdentityException{},
+		&aadpodv1.AzurePodIdentityExceptionList{},
+	)
+	metav1.AddToGroupVersion(scheme, aadPodIdentityGroupVersion)
 	return scheme
 }
 
@@ -156,22 +255,36 @@ func loadE2EConfig(configPath string) *clusterctl.E2EConfig {
 	config := clusterctl.LoadE2EConfig(context.TODO(), clusterctl.LoadE2EConfigInput{ConfigPath: configPath})
 	Expect(config).ToNot(BeNil(), "Failed to load E2E config from %s", configPath)
 
-	// Read CNI file and set CNI_RESOURCES environmental variable
-	Expect(config.Variables).To(HaveKey(capi_e2e.CNIPath), "Missing %s variable in the config", capi_e2e.CNIPath)
-	clusterctl.SetCNIEnvVar(config.GetVariable(capi_e2e.CNIPath), capi_e2e.CNIResources)
-
-	// Read CNI_IPV6 file and set CNI_RESOURCES_IPV6 environmental variable
-	Expect(config.Variables).To(HaveKey(CNIPathIPv6), "Missing %s variable in the config", CNIPathIPv6)
-	clusterctl.SetCNIEnvVar(config.GetVariable(CNIPathIPv6), CNIResourcesIPv6)
-
 	return config
 }
 
 func createClusterctlLocalRepository(config *clusterctl.E2EConfig, repositoryFolder string) string {
-	clusterctlConfig := clusterctl.CreateRepository(context.TODO(), clusterctl.CreateRepositoryInput{
+	createRepositoryInput := clusterctl.CreateRepositoryInput{
 		E2EConfig:        config,
 		RepositoryFolder: repositoryFolder,
-	})
+	}
+
+	// Ensuring a CNI file is defined in the config and register a FileTransformation to inject the referenced file as in place of the CNI_RESOURCES envSubst variable.
+	Expect(config.Variables).To(HaveKey(capi_e2e.CNIPath), "Missing %s variable in the config", capi_e2e.CNIPath)
+	cniPath := config.GetVariable(capi_e2e.CNIPath)
+	Expect(cniPath).To(BeAnExistingFile(), "The %s variable should resolve to an existing file", capi_e2e.CNIPath)
+	createRepositoryInput.RegisterClusterResourceSetConfigMapTransformation(cniPath, capi_e2e.CNIResources)
+
+	// Do the same for CNI_RESOURCES_IPV6.
+	Expect(config.Variables).To(HaveKey(CNIPathIPv6), "Missing %s variable in the config", CNIPathIPv6)
+	cniPathIPv6 := config.GetVariable(CNIPathIPv6)
+	Expect(cniPathIPv6).To(BeAnExistingFile(), "The %s variable should resolve to an existing file", CNIPathIPv6)
+	createRepositoryInput.RegisterClusterResourceSetConfigMapTransformation(cniPathIPv6, CNIResourcesIPv6)
+
+	// Read CNI_WINDOWS file and set CNI_RESOURCES_WINDOWS environmental variable
+	// This file is generated with escapes due to the named pipes which need to be escaped for a bug in envsubst library
+	// https://github.com/kubernetes-sigs/cluster-api/issues/4016
+	Expect(config.Variables).To(HaveKey(CNIPathWindows), "Missing %s variable in the config", CNIPathWindows)
+	cniPathWindows := config.GetVariable(CNIPathWindows)
+	Expect(cniPathWindows).To(BeAnExistingFile(), "The %s variable should resolve to an existing file", CNIPathWindows)
+	createRepositoryInput.RegisterClusterResourceSetConfigMapTransformation(cniPathWindows, CNIResourcesWindows)
+
+	clusterctlConfig := clusterctl.CreateRepository(context.TODO(), createRepositoryInput)
 	Expect(clusterctlConfig).To(BeAnExistingFile(), "The clusterctl config file does not exists in the local repository %s", repositoryFolder)
 	return clusterctlConfig
 }
@@ -191,7 +304,7 @@ func setupBootstrapCluster(config *clusterctl.E2EConfig, scheme *runtime.Scheme,
 		Expect(kubeconfigPath).To(BeAnExistingFile(), "Failed to get the kubeconfig file for the bootstrap cluster")
 	}
 
-	clusterProxy := framework.NewClusterProxy("bootstrap", kubeconfigPath, scheme)
+	clusterProxy := NewAzureClusterProxy("bootstrap", kubeconfigPath, scheme)
 	Expect(clusterProxy).ToNot(BeNil(), "Failed to get a bootstrap cluster proxy")
 
 	return clusterProvider, clusterProxy

@@ -62,11 +62,17 @@ func restoreAzureMachineSpec(restored, dst *infrav1alpha3.AzureMachineSpec) {
 	if restored.SpotVMOptions != nil {
 		dst.SpotVMOptions = restored.SpotVMOptions.DeepCopy()
 	}
+	if restored.SecurityProfile != nil {
+		dst.SecurityProfile = restored.SecurityProfile.DeepCopy()
+	}
 	if len(restored.DataDisks) != 0 {
 		dst.DataDisks = restored.DataDisks
 	}
 	dst.OSDisk.DiffDiskSettings = restored.OSDisk.DiffDiskSettings
 	dst.OSDisk.CachingType = restored.OSDisk.CachingType
+	if restored.OSDisk.ManagedDisk.DiskEncryptionSet != nil {
+		dst.OSDisk.ManagedDisk.DiskEncryptionSet = restored.OSDisk.ManagedDisk.DiskEncryptionSet.DeepCopy()
+	}
 
 	if restored.Image != nil && restored.Image.Marketplace != nil {
 		dst.Image.Marketplace.ThirdPartyImage = restored.Image.Marketplace.ThirdPartyImage

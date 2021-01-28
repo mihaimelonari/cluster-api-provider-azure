@@ -18,12 +18,14 @@ package v1alpha3
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
@@ -32,13 +34,14 @@ import (
 // log is for logging in this package.
 var azuremachinepoollog = logf.Log.WithName("azuremachinepool-resource")
 
+// SetupWebhookWithManager sets up and registers the webhook with the manager.
 func (amp *AzureMachinePool) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(amp).
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/mutate-exp-cluster-x-k8s-io-x-k8s-io-v1alpha3-azuremachinepool,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=exp.cluster.x-k8s.io.x-k8s.io,resources=azuremachinepools,verbs=create;update,versions=v1alpha3,name=mazuremachinepool.kb.io,sideEffects=None
+// +kubebuilder:webhook:path=/mutate-exp-infrastructure-cluster-x-k8s-io-v1alpha3-azuremachinepool,mutating=true,failurePolicy=fail,groups=exp.infrastructure.cluster.x-k8s.io,resources=azuremachinepools,verbs=create;update,versions=v1alpha3,name=azuremachinepool.kb.io,sideEffects=None
 
 var _ webhook.Defaulter = &AzureMachinePool{}
 
@@ -52,20 +55,20 @@ func (amp *AzureMachinePool) Default() {
 	}
 }
 
-// +kubebuilder:webhook:verbs=create;update,path=/validate-exp-cluster-x-k8s-io-x-k8s-io-v1alpha3-azuremachinepool,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=exp.cluster.x-k8s.io.x-k8s.io,resources=azuremachinepools,versions=v1alpha3,name=vazuremachinepool.kb.io,sideEffects=None
+// +kubebuilder:webhook:verbs=create;update,path=/validate-exp-infrastructure-cluster-x-k8s-io-v1alpha3-azuremachinepool,mutating=false,failurePolicy=fail,groups=exp.infrastructure.cluster.x-k8s.io,resources=azuremachinepools,versions=v1alpha3,name=azuremachinepool.kb.io,sideEffects=None
 
 var _ webhook.Validator = &AzureMachinePool{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
 func (amp *AzureMachinePool) ValidateCreate() error {
 	azuremachinepoollog.Info("validate create", "name", amp.Name)
-	return amp.Validate()
+	return amp.Validate(nil)
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
 func (amp *AzureMachinePool) ValidateUpdate(old runtime.Object) error {
 	azuremachinepoollog.Info("validate update", "name", amp.Name)
-	return amp.Validate()
+	return amp.Validate(old)
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
@@ -75,11 +78,13 @@ func (amp *AzureMachinePool) ValidateDelete() error {
 }
 
 // Validate the Azure Machine Pool and return an aggregate error
-func (amp *AzureMachinePool) Validate() error {
+func (amp *AzureMachinePool) Validate(old runtime.Object) error {
 	validators := []func() error{
 		amp.ValidateImage,
 		amp.ValidateTerminateNotificationTimeout,
 		amp.ValidateSSHKey,
+		amp.ValidateUserAssignedIdentity,
+		amp.ValidateSystemAssignedIdentity(old),
 	}
 
 	var errs []error
@@ -89,11 +94,7 @@ func (amp *AzureMachinePool) Validate() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return kerrors.NewAggregate(errs)
-	}
-
-	return nil
+	return kerrors.NewAggregate(errs)
 }
 
 // ValidateImage of an AzureMachinePool
@@ -138,4 +139,36 @@ func (amp *AzureMachinePool) ValidateSSHKey() error {
 	}
 
 	return nil
+}
+
+// ValidateUserAssignedIdentity validates the user-assigned identities list
+func (amp *AzureMachinePool) ValidateUserAssignedIdentity() error {
+	fldPath := field.NewPath("UserAssignedIdentities")
+	if errs := infrav1.ValidateUserAssignedIdentity(amp.Spec.Identity, amp.Spec.UserAssignedIdentities, fldPath); len(errs) > 0 {
+		return kerrors.NewAggregate(errs.ToAggregate().Errors())
+	}
+
+	return nil
+}
+
+// ValidateSystemAssignedIdentity validates system-assigned identity role
+func (amp *AzureMachinePool) ValidateSystemAssignedIdentity(old runtime.Object) func() error {
+	return func() error {
+		var oldRole string
+		if old != nil {
+			oldMachinePool, ok := old.(*AzureMachinePool)
+			if !ok {
+				return fmt.Errorf("unexpected type for old azure machine pool object. Expected: %q, Got: %q",
+					"AzureMachinePool", reflect.TypeOf(old))
+			}
+			oldRole = oldMachinePool.Spec.RoleAssignmentName
+		}
+
+		fldPath := field.NewPath("roleAssignmentName")
+		if errs := infrav1.ValidateSystemAssignedIdentity(amp.Spec.Identity, oldRole, amp.Spec.RoleAssignmentName, fldPath); len(errs) > 0 {
+			return kerrors.NewAggregate(errs.ToAggregate().Errors())
+		}
+
+		return nil
+	}
 }

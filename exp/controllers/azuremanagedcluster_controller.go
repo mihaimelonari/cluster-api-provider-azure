@@ -22,6 +22,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel/label"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -39,6 +41,7 @@ import (
 
 	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 	"sigs.k8s.io/cluster-api-provider-azure/util/reconciler"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 // AzureManagedClusterReconciler reconciles a AzureManagedCluster object
@@ -49,6 +52,7 @@ type AzureManagedClusterReconciler struct {
 	ReconcileTimeout time.Duration
 }
 
+// SetupWithManager initializes this controller with a manager.
 func (r *AzureManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	log := r.Log.WithValues("controller", "AzureManagedCluster")
 	azManagedCluster := &infrav1exp.AzureManagedCluster{}
@@ -79,10 +83,19 @@ func (r *AzureManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager, optio
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
+// Reconcile idempotently gets, creates, and updates a managed cluster.
 func (r *AzureManagedClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reterr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), reconciler.DefaultedLoopTimeout(r.ReconcileTimeout))
 	defer cancel()
-	log := r.Log.WithValues("namespace", req.Namespace, "aksCluster", req.Name)
+	log := r.Log.WithValues("namespace", req.Namespace, "azureManagedCluster", req.Name)
+
+	ctx, span := tele.Tracer().Start(ctx, "controllers.AzureManagedClusterReconciler.Reconcile",
+		trace.WithAttributes(
+			label.String("namespace", req.Namespace),
+			label.String("name", req.Name),
+			label.String("kind", "AzureManagedCluster"),
+		))
+	defer span.End()
 
 	// Fetch the AzureManagedCluster instance
 	aksCluster := &infrav1exp.AzureManagedCluster{}

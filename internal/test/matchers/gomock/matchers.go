@@ -17,6 +17,7 @@ limitations under the License.
 package gomock
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/golang/mock/gomock"
@@ -35,17 +36,20 @@ type (
 		actual   string
 	}
 
-	logEntryMactcher struct {
-		level   int
-		logFunc string
-		values  []interface{}
-		errors  []error
+	contextMatcher struct {
+		actual interface{}
 	}
 
 	LogMatcher interface {
 		types.GomegaMatcher
 		WithLevel(int) LogMatcher
 		WithLogFunc(string) LogMatcher
+	}
+
+	customMatcher struct {
+		state    map[string]interface{}
+		matcher  func(x interface{}, state map[string]interface{}) bool
+		stringer func(state map[string]interface{}) string
 	}
 )
 
@@ -87,4 +91,35 @@ func (e *errStrEq) Matches(y interface{}) bool {
 
 func (e *errStrEq) String() string {
 	return fmt.Sprintf("error.Error() %q, but got %q", e.expected, e.actual)
+}
+
+func AContext() gomock.Matcher {
+	return &contextMatcher{}
+}
+
+func (e *contextMatcher) Matches(y interface{}) bool {
+	_, ok := y.(context.Context)
+	e.actual = y
+	return ok
+}
+
+func (e *contextMatcher) String() string {
+	return fmt.Sprintf("expected a context.Context, but got %T", e.actual)
+}
+
+// CustomMatcher creates a matcher from two funcs rather than having to make a new struct and implement Matcher
+func CustomMatcher(matcher func(x interface{}, state map[string]interface{}) bool, stringer func(state map[string]interface{}) string) gomock.Matcher {
+	return &customMatcher{
+		state:    make(map[string]interface{}),
+		matcher:  matcher,
+		stringer: stringer,
+	}
+}
+
+func (c customMatcher) Matches(x interface{}) bool {
+	return c.matcher(x, c.state)
+}
+
+func (c customMatcher) String() string {
+	return c.stringer(c.state)
 }

@@ -22,31 +22,31 @@ import (
 	"testing"
 
 	"github.com/Azure/go-autorest/autorest"
+	"github.com/golang/mock/gomock"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/klogr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/disks/mock_disks"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"github.com/golang/mock/gomock"
-
-	"k8s.io/klog/klogr"
+	gomockinternal "sigs.k8s.io/cluster-api-provider-azure/internal/test/matchers/gomock"
 )
 
 func TestDeleteDisk(t *testing.T) {
 	testcases := []struct {
 		name          string
 		expectedError string
-		expect        func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockClientMockRecorder)
+		expect        func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockclientMockRecorder)
 	}{
 		{
 			name:          "delete the disk",
 			expectedError: "",
-			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockClientMockRecorder) {
+			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockclientMockRecorder) {
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.DiskSpecs().Return([]azure.DiskSpec{
 					{
@@ -57,14 +57,14 @@ func TestDeleteDisk(t *testing.T) {
 					},
 				})
 				s.ResourceGroup().AnyTimes().Return("my-rg")
-				m.Delete(context.TODO(), "my-rg", "my-disk-1")
-				m.Delete(context.TODO(), "my-rg", "honk-disk")
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-disk-1")
+				m.Delete(gomockinternal.AContext(), "my-rg", "honk-disk")
 			},
 		},
 		{
 			name:          "disk already deleted",
 			expectedError: "",
-			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockClientMockRecorder) {
+			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockclientMockRecorder) {
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.DiskSpecs().Return([]azure.DiskSpec{
 					{
@@ -75,14 +75,14 @@ func TestDeleteDisk(t *testing.T) {
 					},
 				})
 				s.ResourceGroup().AnyTimes().Return("my-rg")
-				m.Delete(context.TODO(), "my-rg", "my-disk-1").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not Found"))
-				m.Delete(context.TODO(), "my-rg", "my-disk-2").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not Found"))
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-disk-1").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not Found"))
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-disk-2").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 404}, "Not Found"))
 			},
 		},
 		{
 			name:          "error while trying to delete the disk",
 			expectedError: "failed to delete disk my-disk-1 in resource group my-rg: #: Internal Server Error: StatusCode=500",
-			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockClientMockRecorder) {
+			expect: func(s *mock_disks.MockDiskScopeMockRecorder, m *mock_disks.MockclientMockRecorder) {
 				s.V(gomock.AssignableToTypeOf(2)).AnyTimes().Return(klogr.New())
 				s.DiskSpecs().Return([]azure.DiskSpec{
 					{
@@ -93,7 +93,7 @@ func TestDeleteDisk(t *testing.T) {
 					},
 				})
 				s.ResourceGroup().AnyTimes().Return("my-rg")
-				m.Delete(context.TODO(), "my-rg", "my-disk-1").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 500}, "Internal Server Error"))
+				m.Delete(gomockinternal.AContext(), "my-rg", "my-disk-1").Return(autorest.NewErrorWithResponse("", "", &http.Response{StatusCode: 500}, "Internal Server Error"))
 			},
 		},
 	}
@@ -107,13 +107,13 @@ func TestDeleteDisk(t *testing.T) {
 			mockCtrl := gomock.NewController(t)
 			defer mockCtrl.Finish()
 			scopeMock := mock_disks.NewMockDiskScope(mockCtrl)
-			clientMock := mock_disks.NewMockClient(mockCtrl)
+			clientMock := mock_disks.NewMockclient(mockCtrl)
 
 			tc.expect(scopeMock.EXPECT(), clientMock.EXPECT())
 
 			s := &Service{
 				Scope:  scopeMock,
-				Client: clientMock,
+				client: clientMock,
 			}
 
 			err := s.Delete(context.TODO())
@@ -129,23 +129,13 @@ func TestDeleteDisk(t *testing.T) {
 
 func TestDiskSpecs(t *testing.T) {
 	testcases := []struct {
-		name          string
-		azureMachine  *infrav1.AzureMachine
-		expectedDisks []azure.DiskSpec
+		name                   string
+		azureMachineModifyFunc func(*infrav1.AzureMachine)
+		expectedDisks          []azure.DiskSpec
 	}{
 		{
-			name: "only os disk",
-			azureMachine: &infrav1.AzureMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-azure-machine",
-				},
-				Spec: infrav1.AzureMachineSpec{
-					OSDisk: infrav1.OSDisk{
-						DiskSizeGB: 30,
-						OSType:     "Linux",
-					},
-				},
-			},
+			name:                   "only os disk",
+			azureMachineModifyFunc: func(m *infrav1.AzureMachine) {},
 			expectedDisks: []azure.DiskSpec{
 				{
 					Name: "my-azure-machine_OSDisk",
@@ -153,19 +143,10 @@ func TestDiskSpecs(t *testing.T) {
 			},
 		}, {
 			name: "os and data disks",
-			azureMachine: &infrav1.AzureMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-azure-machine",
-				},
-				Spec: infrav1.AzureMachineSpec{
-					OSDisk: infrav1.OSDisk{
-						DiskSizeGB: 30,
-						OSType:     "Linux",
-					},
-					DataDisks: []infrav1.DataDisk{{
-						NameSuffix: "etcddisk",
-					}},
-				},
+			azureMachineModifyFunc: func(m *infrav1.AzureMachine) {
+				m.Spec.DataDisks = []infrav1.DataDisk{{
+					NameSuffix: "etcddisk",
+				}}
 			},
 			expectedDisks: []azure.DiskSpec{
 				{
@@ -177,23 +158,14 @@ func TestDiskSpecs(t *testing.T) {
 			},
 		}, {
 			name: "os and multiple data disks",
-			azureMachine: &infrav1.AzureMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "my-azure-machine",
-				},
-				Spec: infrav1.AzureMachineSpec{
-					OSDisk: infrav1.OSDisk{
-						DiskSizeGB: 30,
-						OSType:     "Linux",
+			azureMachineModifyFunc: func(m *infrav1.AzureMachine) {
+				m.Spec.DataDisks = []infrav1.DataDisk{
+					{
+						NameSuffix: "etcddisk",
 					},
-					DataDisks: []infrav1.DataDisk{
-						{
-							NameSuffix: "etcddisk",
-						},
-						{
-							NameSuffix: "otherdisk",
-						}},
-				},
+					{
+						NameSuffix: "otherdisk",
+					}}
 			},
 			expectedDisks: []azure.DiskSpec{
 				{
@@ -231,14 +203,28 @@ func TestDiskSpecs(t *testing.T) {
 					Name: "my-machine",
 				},
 			}
+
+			azureMachine := &infrav1.AzureMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-azure-machine",
+				},
+				Spec: infrav1.AzureMachineSpec{
+					OSDisk: infrav1.OSDisk{
+						DiskSizeGB: 30,
+						OSType:     "Linux",
+					},
+				},
+			}
+			tc.azureMachineModifyFunc(azureMachine)
+
 			initObjects := []runtime.Object{
 				cluster,
 				machine,
 				azureCluster,
-				tc.azureMachine,
+				azureMachine,
 			}
 			client := fake.NewFakeClientWithScheme(scheme, initObjects...)
-			clusterScope, err := scope.NewClusterScope(scope.ClusterScopeParams{
+			clusterScope, err := scope.NewClusterScope(context.Background(), scope.ClusterScopeParams{
 				AzureClients: scope.AzureClients{
 					Authorizer: autorest.NullAuthorizer{},
 				},
@@ -248,10 +234,10 @@ func TestDiskSpecs(t *testing.T) {
 			})
 			g.Expect(err).NotTo(HaveOccurred())
 			machineScope, err := scope.NewMachineScope(scope.MachineScopeParams{
-				Client:           client,
-				ClusterDescriber: clusterScope,
-				Machine:          machine,
-				AzureMachine:     tc.azureMachine,
+				Client:       client,
+				ClusterScope: clusterScope,
+				Machine:      machine,
+				AzureMachine: azureMachine,
 			})
 			g.Expect(err).NotTo(HaveOccurred())
 

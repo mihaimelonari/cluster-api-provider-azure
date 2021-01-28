@@ -17,20 +17,21 @@ limitations under the License.
 package controllers
 
 import (
-	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/golang/mock/gomock"
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/mocks"
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
 	"testing"
 
+	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/golang/mock/gomock"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
-	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	clusterv1exp "sigs.k8s.io/cluster-api/exp/api/v1alpha3"
+
+	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/mocks"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
+	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 )
 
 func Test_newAzureMachinePoolService(t *testing.T) {
@@ -39,25 +40,23 @@ func Test_newAzureMachinePoolService(t *testing.T) {
 
 	cluster := newAzureCluster("foo")
 	cluster.Spec.ResourceGroup = "resourceGroup"
-	cluster.Spec.Location = "test-location"
+	cluster.Spec.Location = "test-location"
 	cluster.Spec.ResourceGroup = "my-rg"
 	cluster.Spec.SubscriptionID = "123"
 	cluster.Spec.NetworkSpec = infrav1.NetworkSpec{
 		Vnet: infrav1.VnetSpec{Name: "my-vnet", ResourceGroup: "my-rg"},
 	}
 
-	cs := &scope.ClusterScope{
-		AzureCluster: cluster,
-	}
-
-	clusterMock := mocks.NewMockClusterDescriber(mockCtrl)
+	clusterMock := mocks.NewMockClusterScoper(mockCtrl)
 	clusterMock.EXPECT().SubscriptionID().AnyTimes()
 	clusterMock.EXPECT().BaseURI().AnyTimes()
 	clusterMock.EXPECT().Authorizer().AnyTimes()
+	clusterMock.EXPECT().Location().Return(cluster.Spec.Location)
+	clusterMock.EXPECT().HashKey().Return("foo")
 
 	mps := &scope.MachinePoolScope{
-		ClusterDescriber: clusterMock,
-		MachinePool:      newMachinePool("foo", "poolName"),
+		ClusterScoper: clusterMock,
+		MachinePool:   newMachinePool("foo", "poolName"),
 		AzureMachinePool: &infrav1exp.AzureMachinePool{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "poolName",
@@ -65,8 +64,9 @@ func Test_newAzureMachinePoolService(t *testing.T) {
 		},
 	}
 
-	subject := newAzureMachinePoolService(mps, cs)
+	subject, err := newAzureMachinePoolService(mps)
 	g := NewWithT(t)
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(subject).NotTo(BeNil())
 	g.Expect(subject.virtualMachinesScaleSetSvc).NotTo(BeNil())
 	g.Expect(subject.skuCache).NotTo(BeNil())

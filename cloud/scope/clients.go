@@ -17,6 +17,9 @@ limitations under the License.
 package scope
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -26,8 +29,9 @@ import (
 
 // AzureClients contains all the Azure clients used by the scopes.
 type AzureClients struct {
-	Authorizer autorest.Authorizer
 	auth.EnvironmentSettings
+
+	Authorizer                 autorest.Authorizer
 	ResourceManagerEndpoint    string
 	ResourceManagerVMDNSSuffix string
 }
@@ -58,6 +62,14 @@ func (c *AzureClients) SubscriptionID() string {
 	return c.Values[auth.SubscriptionID]
 }
 
+// HashKey returns a base64 url encoded sha256 hash for the Auth scope (Azure TenantID + CloudEnv + SubscriptionID +
+// ClientID).
+func (c *AzureClients) HashKey() string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(c.TenantID() + c.CloudEnvironment() + c.SubscriptionID() + c.ClientID()))
+	return base64.URLEncoding.EncodeToString(hasher.Sum(nil))
+}
+
 func (c *AzureClients) setCredentials(subscriptionID string) error {
 	settings, err := auth.GetSettingsFromEnvironment()
 	if err != nil {
@@ -80,5 +92,31 @@ func (c *AzureClients) setCredentials(subscriptionID string) error {
 	c.Values[auth.TenantID] = strings.TrimSuffix(c.Values[auth.TenantID], "\n")
 
 	c.Authorizer, err = c.GetAuthorizer()
+	return err
+}
+
+func (c *AzureClients) setCredentialsWithProvider(ctx context.Context, subscriptionID string, credentialsProvider *AzureCredentialsProvider) error {
+	if credentialsProvider == nil {
+		return fmt.Errorf("credentials provider cannot have an empty value")
+	}
+
+	settings, err := auth.GetSettingsFromEnvironment()
+	if err != nil {
+		return err
+	}
+
+	if subscriptionID == "" {
+		subscriptionID = settings.GetSubscriptionID()
+		if subscriptionID == "" {
+			return fmt.Errorf("error creating azure services. subscriptionID is not set in cluster or AZURE_SUBSCRIPTION_ID env var")
+		}
+	}
+
+	c.EnvironmentSettings = settings
+	c.ResourceManagerEndpoint = settings.Environment.ResourceManagerEndpoint
+	c.ResourceManagerVMDNSSuffix = settings.Environment.ResourceManagerVMDNSSuffix
+	c.Values[auth.SubscriptionID] = strings.TrimSuffix(subscriptionID, "\n")
+
+	c.Authorizer, err = credentialsProvider.GetAuthorizer(ctx, c.ResourceManagerEndpoint)
 	return err
 }

@@ -36,6 +36,7 @@ var azuremanagedcontrolplanelog = logf.Log.WithName("azuremanagedcontrolplane-re
 
 var kubeSemver = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-0-9a-zA-Z_\.+]*)?$`)
 
+// SetupWebhookWithManager sets up and registers the webhook with the manager.
 func (r *AzureManagedControlPlane) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
@@ -68,10 +69,14 @@ func (r *AzureManagedControlPlane) Default() {
 		r.Spec.Version = normalizedVersion
 	}
 
-	err := r.SetDefaultSSHPublicKey()
+	err := r.setDefaultSSHPublicKey()
 	if err != nil {
 		azuremanagedcontrolplanelog.Error(err, "SetDefaultSshPublicKey failed")
 	}
+
+	r.setDefaultNodeResourceGroupName()
+	r.setDefaultVirtualNetwork()
+	r.setDefaultSubnet()
 }
 
 // +kubebuilder:webhook:verbs=create;update,path=/validate-exp-infrastructure-cluster-x-k8s-io-v1alpha3-azuremanagedcontrolplane,mutating=false,failurePolicy=fail,groups=exp.infrastructure.cluster.x-k8s.io,resources=azuremanagedcontrolplanes,versions=v1alpha3,name=azuremanagedcontrolplane.kb.io
@@ -104,7 +109,7 @@ func (r *AzureManagedControlPlane) Validate() error {
 	validators := []func() error{
 		r.validateVersion,
 		r.validateDNSServiceIP,
-		r.ValidateSSHKey,
+		r.validateSSHKey,
 	}
 
 	var errs []error
@@ -114,11 +119,7 @@ func (r *AzureManagedControlPlane) Validate() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return kerrors.NewAggregate(errs)
-	}
-
-	return nil
+	return kerrors.NewAggregate(errs)
 }
 
 // validate DNSServiceIP
@@ -141,7 +142,7 @@ func (r *AzureManagedControlPlane) validateVersion() error {
 }
 
 // ValidateSSHKey validates an SSHKey
-func (r *AzureManagedControlPlane) ValidateSSHKey() error {
+func (r *AzureManagedControlPlane) validateSSHKey() error {
 	if r.Spec.SSHPublicKey != "" {
 		sshKey := r.Spec.SSHPublicKey
 		if errs := infrav1.ValidateSSHKey(sshKey, field.NewPath("sshKey")); len(errs) > 0 {

@@ -83,6 +83,7 @@ create_cluster() {
     fi
 
     export CLUSTER_NAME="capz-$(head /dev/urandom | LC_ALL=C tr -dc a-z0-9 | head -c 6 ; echo '')"
+    export AZURE_RESOURCE_GROUP=${CLUSTER_NAME}
     # Need a cluster with at least 2 nodes
     export CONTROL_PLANE_MACHINE_COUNT=${CONTROL_PLANE_MACHINE_COUNT:-1}
     export WORKER_MACHINE_COUNT=${WORKER_MACHINE_COUNT:-2}
@@ -121,7 +122,7 @@ run_upstream_e2e_tests() {
         fi
     fi
 
-    # setting this env prevents ginkg e2e from trying to run provider setup
+    # setting this env prevents ginkgo e2e from trying to run provider setup
     export KUBERNETES_CONFORMANCE_TEST="y"
     # run the tests
     (cd "$(go env GOPATH)/src/k8s.io/kubernetes" && ./hack/ginkgo-e2e.sh \

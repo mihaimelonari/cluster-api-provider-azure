@@ -26,31 +26,39 @@ import (
 
 	// +kubebuilder:scaffold:imports
 
+	"github.com/Azure/go-autorest/tracing"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
+	otelProm "go.opentelemetry.io/otel/exporters/metric/prometheus"
+	"go.opentelemetry.io/otel/exporters/trace/jaeger"
+	"go.opentelemetry.io/otel/sdk/trace"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	cgrecord "k8s.io/client-go/tools/record"
 	"k8s.io/klog"
 	"k8s.io/klog/klogr"
-
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
+	clusterv1exp "sigs.k8s.io/cluster-api/exp/api/v1alpha3"
 	capifeature "sigs.k8s.io/cluster-api/feature"
+	"sigs.k8s.io/cluster-api/util/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	aadpodv1 "github.com/Azure/aad-pod-identity/pkg/apis/aadpodidentity/v1"
 	infrav1alpha2 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha2"
 	infrav1alpha3 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
 	"sigs.k8s.io/cluster-api-provider-azure/controllers"
 	infrav1alpha3exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 	infrav1controllersexp "sigs.k8s.io/cluster-api-provider-azure/exp/controllers"
-	"sigs.k8s.io/cluster-api-provider-azure/util/reconciler"
-	version "sigs.k8s.io/cluster-api-provider-azure/version"
-
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
-	clusterv1exp "sigs.k8s.io/cluster-api/exp/api/v1alpha3"
-	"sigs.k8s.io/cluster-api/util/record"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
-
 	"sigs.k8s.io/cluster-api-provider-azure/feature"
+	"sigs.k8s.io/cluster-api-provider-azure/pkg/ot"
+	"sigs.k8s.io/cluster-api-provider-azure/util/reconciler"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
+	"sigs.k8s.io/cluster-api-provider-azure/version"
 )
 
 var (
@@ -68,6 +76,18 @@ func init() {
 	_ = clusterv1.AddToScheme(scheme)
 	_ = clusterv1exp.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
+
+	// Add aadpodidentity v1 to the scheme.
+	aadPodIdentityGroupVersion := schema.GroupVersion{Group: aadpodv1.CRDGroup, Version: aadpodv1.CRDVersion}
+	scheme.AddKnownTypes(aadPodIdentityGroupVersion,
+		&aadpodv1.AzureIdentity{},
+		&aadpodv1.AzureIdentityList{},
+		&aadpodv1.AzureIdentityBinding{},
+		&aadpodv1.AzureIdentityBindingList{},
+		&aadpodv1.AzurePodIdentityException{},
+		&aadpodv1.AzurePodIdentityExceptionList{},
+	)
+	metav1.AddToGroupVersion(scheme, aadPodIdentityGroupVersion)
 }
 
 var (
@@ -83,8 +103,10 @@ var (
 	healthAddr                  string
 	webhookPort                 int
 	reconcileTimeout            time.Duration
+	enableTracing               bool
 )
 
+// InitFlags initializes all command-line flags.
 func InitFlags(fs *pflag.FlagSet) {
 	fs.StringVar(
 		&metricsAddr,
@@ -162,6 +184,13 @@ func InitFlags(fs *pflag.FlagSet) {
 		"The maximum duration a reconcile loop can run (e.g. 90m)",
 	)
 
+	fs.BoolVar(
+		&enableTracing,
+		"enable-tracing",
+		false,
+		"Enable Jaeger tracing to an agent running as a sidecar to the controller.",
+	)
+
 	feature.MutableGates.AddFlag(fs)
 }
 
@@ -182,6 +211,19 @@ func main() {
 	}
 
 	ctrl.SetLogger(klogr.New())
+
+	if enableTracing {
+		flush, err := initJaegerTracing()
+		if err != nil {
+			setupLog.Error(err, "failed to init Jaeger tracing")
+			os.Exit(1)
+		}
+
+		tracing.Register(ot.NewOpenTelemetryAutorestTracer(tele.Tracer()))
+
+		// try to flush all traces before exiting
+		defer flush()
+	}
 
 	// Machine and cluster operations can create enough events to trigger the event recorder spam filter
 	// Setting the burst size higher ensures all events will be recorded and submitted to the API
@@ -206,25 +248,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := initPrometheusMetrics(); err != nil {
+		setupLog.Error(err, "failed to init Prometheus metrics")
+		os.Exit(1)
+	}
+
 	// Initialize event recorder.
 	record.InitFromRecorder(mgr.GetEventRecorderFor("azure-controller"))
 
 	if webhookPort == 0 {
-		if err = (&controllers.AzureMachineReconciler{
-			Client:           mgr.GetClient(),
-			Log:              ctrl.Log.WithName("controllers").WithName("AzureMachine"),
-			Recorder:         mgr.GetEventRecorderFor("azuremachine-reconciler"),
-			ReconcileTimeout: reconcileTimeout,
-		}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachineConcurrency}); err != nil {
+		if err = controllers.NewAzureMachineReconciler(mgr.GetClient(),
+			ctrl.Log.WithName("controllers").WithName("AzureMachine"),
+			mgr.GetEventRecorderFor("azuremachine-reconciler"), reconcileTimeout).
+			SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachineConcurrency}); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AzureMachine")
 			os.Exit(1)
 		}
-		if err = (&controllers.AzureClusterReconciler{
-			Client:           mgr.GetClient(),
-			Log:              ctrl.Log.WithName("controllers").WithName("AzureCluster"),
-			Recorder:         mgr.GetEventRecorderFor("azurecluster-reconciler"),
-			ReconcileTimeout: reconcileTimeout,
-		}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureClusterConcurrency}); err != nil {
+		if err = controllers.NewAzureClusterReconciler(mgr.GetClient(),
+			ctrl.Log.WithName("controllers").WithName("AzureCluster"),
+			mgr.GetEventRecorderFor("azurecluster-reconciler"), reconcileTimeout).
+			SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureClusterConcurrency}); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AzureCluster")
 			os.Exit(1)
 		}
@@ -246,15 +289,22 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "AzureJSONMachine")
 			os.Exit(1)
 		}
+		if err = (&controllers.AzureIdentityReconciler{
+			Client:           mgr.GetClient(),
+			Log:              ctrl.Log.WithName("controllers").WithName("AzureIdentity"),
+			Recorder:         mgr.GetEventRecorderFor("azureidentity-reconciler"),
+			ReconcileTimeout: reconcileTimeout,
+		}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureClusterConcurrency}); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AzureIdentity")
+			os.Exit(1)
+		}
 		// just use CAPI MachinePool feature flag rather than create a new one
 		setupLog.V(1).Info(fmt.Sprintf("%+v\n", feature.Gates))
 		if feature.Gates.Enabled(capifeature.MachinePool) {
-			if err = (&infrav1controllersexp.AzureMachinePoolReconciler{
-				Client:           mgr.GetClient(),
-				Log:              ctrl.Log.WithName("controllers").WithName("AzureMachinePool"),
-				Recorder:         mgr.GetEventRecorderFor("azurecluster-reconciler"),
-				ReconcileTimeout: reconcileTimeout,
-			}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachinePoolConcurrency}); err != nil {
+			if err = infrav1controllersexp.NewAzureMachinePoolReconciler(mgr.GetClient(),
+				ctrl.Log.WithName("controllers").WithName("AzureMachinePool"),
+				mgr.GetEventRecorderFor("azuremachinepool-reconciler"), reconcileTimeout).
+				SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachinePoolConcurrency}); err != nil {
 				setupLog.Error(err, "unable to create controller", "controller", "AzureMachinePool")
 				os.Exit(1)
 			}
@@ -268,12 +318,10 @@ func main() {
 				os.Exit(1)
 			}
 			if feature.Gates.Enabled(feature.AKS) {
-				if err = (&infrav1controllersexp.AzureManagedMachinePoolReconciler{
-					Client:           mgr.GetClient(),
-					Log:              ctrl.Log.WithName("controllers").WithName("AzureManagedMachinePool"),
-					Recorder:         mgr.GetEventRecorderFor("azuremachine-reconciler"),
-					ReconcileTimeout: reconcileTimeout,
-				}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachineConcurrency}); err != nil {
+				if err = infrav1controllersexp.NewAzureManagedMachinePoolReconciler(mgr.GetClient(),
+					ctrl.Log.WithName("controllers").WithName("AzureManagedMachinePool"),
+					mgr.GetEventRecorderFor("azuremachine-reconciler"), reconcileTimeout).
+					SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: azureMachineConcurrency}); err != nil {
 					setupLog.Error(err, "unable to create controller", "controller", "AzureManagedMachinePool")
 					os.Exit(1)
 				}
@@ -341,4 +389,26 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func initPrometheusMetrics() error {
+	_, err := otelProm.InstallNewPipeline(otelProm.Config{
+		Registry: metrics.Registry.(*prometheus.Registry), // use the controller runtime metrics registry / gatherer
+	})
+
+	return err
+}
+
+// initJaegerTracing creates and injects a jaeger tracing pipeline into the global.TraceProvider which will write
+// tracing events to a sidecar agent running on localhost:6831.
+func initJaegerTracing() (func(), error) {
+	return jaeger.InstallNewPipeline(
+		jaeger.WithAgentEndpoint("localhost:6831"),
+		jaeger.WithProcess(jaeger.Process{
+			ServiceName: "capz",
+		}),
+		jaeger.WithSDK(&trace.Config{
+			DefaultSampler: trace.AlwaysSample(),
+		}),
+	)
 }

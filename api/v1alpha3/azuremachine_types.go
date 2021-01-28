@@ -63,6 +63,7 @@ type AzureMachineSpec struct {
 	// UserAssignedIdentities is a list of standalone Azure identities provided by the user
 	// The lifecycle of a user-assigned identity is managed separately from the lifecycle of
 	// the AzureMachine.
+	// See https://docs.microsoft.com/en-us/azure/active-directory/managed-identities-azure-resources/how-to-manage-ua-identity-cli
 	// +optional
 	UserAssignedIdentities []UserAssignedIdentity `json:"userAssignedIdentities,omitempty"`
 
@@ -108,6 +109,10 @@ type AzureMachineSpec struct {
 	// SpotVMOptions allows the ability to specify the Machine should use a Spot VM
 	// +optional
 	SpotVMOptions *SpotVMOptions `json:"spotVMOptions,omitempty"`
+
+	// SecurityProfile specifies the Security profile settings for a virtual machine.
+	// +optional
+	SecurityProfile *SecurityProfile `json:"securityProfile,omitempty"`
 }
 
 // SpotVMOptions defines the options relevant to running the Machine on Spot VMs

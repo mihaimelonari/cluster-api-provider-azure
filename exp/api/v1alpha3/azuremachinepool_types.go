@@ -25,6 +25,7 @@ import (
 )
 
 type (
+	// AzureMachineTemplate defines the template for an AzureMachine.
 	AzureMachineTemplate struct {
 		// VMSize is the size of the Virtual Machine to build.
 		// See https://docs.microsoft.com/en-us/rest/api/compute/virtualmachines/createorupdate#virtualmachinesizetypes
@@ -57,6 +58,14 @@ type (
 		// allowed values are between 5 and 15 (mins)
 		// +optional
 		TerminateNotificationTimeout *int `json:"terminateNotificationTimeout,omitempty"`
+
+		// SecurityProfile specifies the Security profile settings for a virtual machine.
+		// +optional
+		SecurityProfile *infrav1.SecurityProfile `json:"securityProfile,omitempty"`
+
+		// SpotVMOptions allows the ability to specify the Machine should use a Spot VM
+		// +optional
+		SpotVMOptions *infrav1.SpotVMOptions `json:"spotVMOptions,omitempty"`
 	}
 
 	// AzureMachinePoolSpec defines the desired state of AzureMachinePool
@@ -81,6 +90,27 @@ type (
 		// This field must match the provider IDs as seen on the node objects corresponding to a machine pool's machine instances.
 		// +optional
 		ProviderIDList []string `json:"providerIDList,omitempty"`
+
+		// Identity is the type of identity used for the Virtual Machine Scale Set.
+		// The type 'SystemAssigned' is an implicitly created identity.
+		// The generated identity will be assigned a Subscription contributor role.
+		// The type 'UserAssigned' is a standalone Azure resource provided by the user
+		// and assigned to the VM
+		// +kubebuilder:default=None
+		// +optional
+		Identity infrav1.VMIdentity `json:"identity,omitempty"`
+
+		// UserAssignedIdentities is a list of standalone Azure identities provided by the user
+		// The lifecycle of a user-assigned identity is managed separately from the lifecycle of
+		// the AzureMachinePool.
+		// See https://docs.microsoft.com/en-us/azure/active-directory/managed-identities-azure-resources/how-to-manage-ua-identity-cli
+		// +optional
+		UserAssignedIdentities []infrav1.UserAssignedIdentity `json:"userAssignedIdentities,omitempty"`
+
+		// RoleAssignmentName is the name of the role assignment to create for a system assigned identity. It can be any valid GUID.
+		// If not specified, a random GUID will be generated.
+		// +optional
+		RoleAssignmentName string `json:"roleAssignmentName,omitempty"`
 	}
 
 	// AzureMachinePoolStatus defines the observed state of AzureMachinePool
@@ -92,6 +122,14 @@ type (
 		// Replicas is the most recently observed number of replicas.
 		// +optional
 		Replicas int32 `json:"replicas"`
+
+		// Instances is the VM instance status for each VM in the VMSS
+		// +optional
+		Instances []*AzureMachinePoolInstanceStatus `json:"instances"`
+
+		// Version is the Kubernetes version for the current VMSS model
+		// +optional
+		Version string `json:"version"`
 
 		// ProvisioningState is the provisioning state of the Azure virtual machine.
 		// +optional
@@ -138,6 +176,39 @@ type (
 		// Conditions defines current service state of the AzureMachinePool.
 		// +optional
 		Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+
+		// LongRunningOperationState saves the state for an Azure long running operations so it can be continued on the
+		// next reconciliation loop.
+		// +optional
+		LongRunningOperationState *infrav1.Future `json:"longRunningOperationState,omitempty"`
+	}
+
+	// AzureMachinePoolInstanceStatus provides status information for each instance in the VMSS
+	AzureMachinePoolInstanceStatus struct {
+		// Version defines the Kubernetes version for the VM Instance
+		// +optional
+		Version string `json:"version"`
+
+		// ProvisioningState is the provisioning state of the Azure virtual machine instance.
+		// +optional
+		ProvisioningState *infrav1.VMState `json:"provisioningState"`
+
+		// ProviderID is the provider identification of the VMSS Instance
+		// +optional
+		ProviderID string `json:"providerID"`
+
+		// InstanceID is the identification of the Machine Instance within the VMSS
+		// +optional
+		InstanceID string `json:"instanceID"`
+
+		// InstanceName is the name of the Machine Instance within the VMSS
+		// +optional
+		InstanceName string `json:"instanceName"`
+
+		// LatestModelApplied indicates the instance is running the most up-to-date VMSS model. A VMSS model describes
+		// the image version the VM is running. If the instance is not running the latest model, it means the instance
+		// may not be running the version of Kubernetes the Machine Pool has specified and needs to be updated.
+		LatestModelApplied bool `json:"latestModelApplied"`
 	}
 
 	// +kubebuilder:object:root=true

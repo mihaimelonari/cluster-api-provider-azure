@@ -18,19 +18,22 @@ package controllers
 
 import (
 	"context"
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/tags"
-
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/inboundnatrules"
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/resourceskus"
-	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/roleassignments"
 
 	"github.com/pkg/errors"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/availabilitysets"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/disks"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/inboundnatrules"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/networkinterfaces"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/publicips"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/resourceskus"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/roleassignments"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/tags"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/virtualmachines"
+	"sigs.k8s.io/cluster-api-provider-azure/cloud/services/vmextensions"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 // azureMachineService is the group of services called by the AzureMachine controller.
@@ -42,27 +45,39 @@ type azureMachineService struct {
 	disksSvc             azure.Service
 	publicIPsSvc         azure.Service
 	tagsSvc              azure.Service
+	vmExtensionsSvc      azure.Service
+	availabilitySetsSvc  azure.Service
 	skuCache             *resourceskus.Cache
 }
 
+var _ azure.Service = (*azureMachineService)(nil)
+
 // newAzureMachineService populates all the services based on input scope.
-func newAzureMachineService(machineScope *scope.MachineScope, clusterScope *scope.ClusterScope) *azureMachineService {
-	cache := resourceskus.NewCache(clusterScope, clusterScope.Location())
+func newAzureMachineService(machineScope *scope.MachineScope) (*azureMachineService, error) {
+	cache, err := resourceskus.GetCache(machineScope, machineScope.Location())
+	if err != nil {
+		return nil, errors.Wrap(err, "failed creating a NewCache")
+	}
 
 	return &azureMachineService{
-		inboundNatRulesSvc:   inboundnatrules.NewService(machineScope),
-		networkInterfacesSvc: networkinterfaces.NewService(machineScope, cache),
-		virtualMachinesSvc:   virtualmachines.NewService(machineScope, cache),
-		roleAssignmentsSvc:   roleassignments.NewService(machineScope),
-		disksSvc:             disks.NewService(machineScope),
-		publicIPsSvc:         publicips.NewService(machineScope),
-		tagsSvc:              tags.NewService(machineScope),
+		inboundNatRulesSvc:   inboundnatrules.New(machineScope),
+		networkInterfacesSvc: networkinterfaces.New(machineScope, cache),
+		virtualMachinesSvc:   virtualmachines.New(machineScope, cache),
+		roleAssignmentsSvc:   roleassignments.New(machineScope),
+		disksSvc:             disks.New(machineScope),
+		publicIPsSvc:         publicips.New(machineScope),
+		tagsSvc:              tags.New(machineScope),
+		vmExtensionsSvc:      vmextensions.New(machineScope),
+		availabilitySetsSvc:  availabilitysets.New(machineScope, cache),
 		skuCache:             cache,
-	}
+	}, nil
 }
 
 // Reconcile reconciles all the services in pre determined order
 func (s *azureMachineService) Reconcile(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.azureMachineService.Reconcile")
+	defer span.End()
+
 	if err := s.publicIPsSvc.Reconcile(ctx); err != nil {
 		return errors.Wrap(err, "failed to create public IP")
 	}
@@ -75,12 +90,20 @@ func (s *azureMachineService) Reconcile(ctx context.Context) error {
 		return errors.Wrap(err, "failed to create network interface")
 	}
 
+	if err := s.availabilitySetsSvc.Reconcile(ctx); err != nil {
+		return errors.Wrap(err, "failed to create availability set")
+	}
+
 	if err := s.virtualMachinesSvc.Reconcile(ctx); err != nil {
 		return errors.Wrap(err, "failed to create virtual machine")
 	}
 
 	if err := s.roleAssignmentsSvc.Reconcile(ctx); err != nil {
 		return errors.Wrap(err, "unable to create role assignment")
+	}
+
+	if err := s.vmExtensionsSvc.Reconcile(ctx); err != nil {
+		return errors.Wrap(err, "unable to create vm extension")
 	}
 
 	if err := s.tagsSvc.Reconcile(ctx); err != nil {
@@ -92,6 +115,9 @@ func (s *azureMachineService) Reconcile(ctx context.Context) error {
 
 // Delete deletes all the services in pre determined order
 func (s *azureMachineService) Delete(ctx context.Context) error {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.azureMachineService.Delete")
+	defer span.End()
+
 	if err := s.virtualMachinesSvc.Delete(ctx); err != nil {
 		return errors.Wrapf(err, "failed to delete machine")
 	}
@@ -112,16 +138,9 @@ func (s *azureMachineService) Delete(ctx context.Context) error {
 		return errors.Wrap(err, "failed to delete OS disk")
 	}
 
-	return nil
-}
+	if err := s.availabilitySetsSvc.Delete(ctx); err != nil {
+		return errors.Wrapf(err, "failed to delete availability set")
+	}
 
-// Delete deletes the VM and its disk so it can be replaced.
-func (s *azureMachineService) DeleteVM(ctx context.Context) error {
-	if err := s.virtualMachinesSvc.Delete(ctx); err != nil {
-		return errors.Wrapf(err, "failed to delete machine")
-	}
-	if err := s.disksSvc.Delete(ctx); err != nil {
-		return errors.Wrap(err, "failed to delete OS disk")
-	}
 	return nil
 }

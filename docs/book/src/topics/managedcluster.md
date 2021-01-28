@@ -47,6 +47,13 @@ export AZURE_SUBSCRIPTION_ID="$(cat ~/sp.json | jq -r .subscriptionId | tr -d '\
 export AZURE_NODE_MACHINE_TYPE="Standard_D2s_v3"
 ```
 
+Managed clusters also require the following feature flags set as environment variables:
+
+```bash
+export EXP_MACHINE_POOL=true
+export EXP_AKS=true
+```
+
 Execute clusterctl to template the resources, then apply to a management cluster:
 
 ```bash
@@ -147,7 +154,7 @@ should be fairly clear from context.
 
 AKS clusters deployed from CAPZ currently only support a limited,
 "blessed" configuration. This was primarily to keep the initial
-implementation simple. If you'd like to managed AKS cluster with CAPZ
+implementation simple. If you'd like to run managed AKS cluster with CAPZ
 and need an additional feature, please open a pull request or issue with
 details. We're happy to help!
 

@@ -20,10 +20,11 @@ import (
 	"context"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/api/trace"
+	"go.opentelemetry.io/otel/label"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -42,20 +43,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
+	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
 	"sigs.k8s.io/cluster-api-provider-azure/cloud/scope"
 	infracontroller "sigs.k8s.io/cluster-api-provider-azure/controllers"
 	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 	"sigs.k8s.io/cluster-api-provider-azure/util/reconciler"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 type (
 	// AzureMachinePoolReconciler reconciles a AzureMachinePool object
 	AzureMachinePoolReconciler struct {
 		client.Client
-		Log              logr.Logger
-		Scheme           *runtime.Scheme
-		Recorder         record.EventRecorder
-		ReconcileTimeout time.Duration
+		Log                           logr.Logger
+		Scheme                        *runtime.Scheme
+		Recorder                      record.EventRecorder
+		ReconcileTimeout              time.Duration
+		createAzureMachinePoolService azureMachinePoolServiceCreator
 	}
 
 	// annotationReaderWriter provides an interface to read and write annotations
@@ -65,6 +69,23 @@ type (
 	}
 )
 
+type azureMachinePoolServiceCreator func(machinePoolScope *scope.MachinePoolScope) (*azureMachinePoolService, error)
+
+// NewAzureMachinePoolReconciler returns a new AzureMachinePoolReconciler instance
+func NewAzureMachinePoolReconciler(client client.Client, log logr.Logger, recorder record.EventRecorder, reconcileTimeout time.Duration) *AzureMachinePoolReconciler {
+	ampr := &AzureMachinePoolReconciler{
+		Client:           client,
+		Log:              log,
+		Recorder:         recorder,
+		ReconcileTimeout: reconcileTimeout,
+	}
+
+	ampr.createAzureMachinePoolService = newAzureMachinePoolService
+
+	return ampr
+}
+
+// SetupWithManager initializes this controller with a manager.
 func (r *AzureMachinePoolReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	log := r.Log.WithValues("controller", "AzureMachinePool")
 	// create mapper to transform incoming AzureClusters into AzureMachinePool requests
@@ -119,11 +140,21 @@ func (r *AzureMachinePoolReconciler) SetupWithManager(mgr ctrl.Manager, options 
 // +kubebuilder:rbac:groups=exp.cluster.x-k8s.io,resources=machinepools;machinepools/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets;,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 
+// Reconcile idempotently gets, creates, and updates a machine pool.
 func (r *AzureMachinePoolReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reterr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), reconciler.DefaultedLoopTimeout(r.ReconcileTimeout))
 	defer cancel()
 	logger := r.Log.WithValues("namespace", req.Namespace, "azureMachinePool", req.Name)
+
+	ctx, span := tele.Tracer().Start(ctx, "controllers.AzureMachinePoolReconciler.Reconcile",
+		trace.WithAttributes(
+			label.String("namespace", req.Namespace),
+			label.String("name", req.Name),
+			label.String("kind", "AzureMachinePool"),
+		))
+	defer span.End()
 
 	azMachinePool := &infrav1exp.AzureMachinePool{}
 	err := r.Get(ctx, req.NamespacedName, azMachinePool)
@@ -174,7 +205,7 @@ func (r *AzureMachinePoolReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 	logger = logger.WithValues("AzureCluster", azureCluster.Name)
 
 	// Create the cluster scope
-	clusterScope, err := scope.NewClusterScope(scope.ClusterScopeParams{
+	clusterScope, err := scope.NewClusterScope(ctx, scope.ClusterScopeParams{
 		Client:       r.Client,
 		Logger:       logger,
 		Cluster:      cluster,
@@ -190,7 +221,7 @@ func (r *AzureMachinePoolReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 		Client:           r.Client,
 		MachinePool:      machinePool,
 		AzureMachinePool: azMachinePool,
-		ClusterDescriber: clusterScope,
+		ClusterScope:     clusterScope,
 	})
 	if err != nil {
 		return reconcile.Result{}, errors.Errorf("failed to create scope: %+v", err)
@@ -213,6 +244,9 @@ func (r *AzureMachinePoolReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result,
 }
 
 func (r *AzureMachinePoolReconciler) reconcileNormal(ctx context.Context, machinePoolScope *scope.MachinePoolScope, clusterScope *scope.ClusterScope) (_ reconcile.Result, reterr error) {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.AzureMachinePoolReconciler.reconcileNormal")
+	defer span.End()
+
 	machinePoolScope.Info("Reconciling AzureMachinePool")
 	// If the AzureMachine is in an error state, return early.
 	if machinePoolScope.AzureMachinePool.Status.FailureReason != nil || machinePoolScope.AzureMachinePool.Status.FailureMessage != nil {
@@ -238,10 +272,28 @@ func (r *AzureMachinePoolReconciler) reconcileNormal(ctx context.Context, machin
 		return reconcile.Result{}, nil
 	}
 
-	ams := newAzureMachinePoolService(machinePoolScope, clusterScope)
-
-	err := ams.Reconcile(ctx)
+	ams, err := r.createAzureMachinePoolService(machinePoolScope)
 	if err != nil {
+		return reconcile.Result{}, errors.Wrap(err, "failed creating a newAzureMachinePoolService")
+	}
+
+	if err := ams.Reconcile(ctx); err != nil {
+		// Handle transient and terminal errors
+		var reconcileError azure.ReconcileError
+		if errors.As(err, &reconcileError) {
+			if reconcileError.IsTerminal() {
+				machinePoolScope.Error(err, "failed to reconcile AzureMachinePool", "name", machinePoolScope.Name())
+				return reconcile.Result{}, nil
+			}
+
+			if reconcileError.IsTransient() {
+				machinePoolScope.Error(err, "failed to reconcile AzureMachinePool", "name", machinePoolScope.Name())
+				return reconcile.Result{RequeueAfter: reconcileError.RequeueAfter()}, nil
+			}
+
+			return reconcile.Result{}, errors.Wrapf(err, "failed to reconcile AzureMachinePool")
+		}
+
 		return reconcile.Result{}, err
 	}
 
@@ -255,6 +307,10 @@ func (r *AzureMachinePoolReconciler) reconcileNormal(ctx context.Context, machin
 	case infrav1.VMStateUpdating:
 		machinePoolScope.V(2).Info("Scale Set is updating", "id", machinePoolScope.ProviderID())
 		machinePoolScope.SetNotReady()
+		// we may still be scaling up, so check back in a bit
+		return reconcile.Result{
+			RequeueAfter: 30 * time.Second,
+		}, nil
 	case infrav1.VMStateDeleting:
 		machinePoolScope.Info("Unexpected scale set deletion", "id", machinePoolScope.ProviderID())
 		r.Recorder.Eventf(machinePoolScope.AzureMachinePool, corev1.EventTypeWarning, "UnexpectedVMDeletion", "Unexpected Azure scale set deletion")
@@ -280,10 +336,18 @@ func (r *AzureMachinePoolReconciler) reconcileNormal(ctx context.Context, machin
 }
 
 func (r *AzureMachinePoolReconciler) reconcileDelete(ctx context.Context, machinePoolScope *scope.MachinePoolScope, clusterScope *scope.ClusterScope) (_ reconcile.Result, reterr error) {
+	ctx, span := tele.Tracer().Start(ctx, "controllers.AzureMachinePoolReconciler.reconcileDelete")
+	defer span.End()
+
 	machinePoolScope.Info("Handling deleted AzureMachinePool")
 
 	if infracontroller.ShouldDeleteIndividualResources(ctx, clusterScope) {
-		if err := newAzureMachinePoolService(machinePoolScope, clusterScope).Delete(ctx); err != nil {
+		amps, err := r.createAzureMachinePoolService(machinePoolScope)
+		if err != nil {
+			return reconcile.Result{}, errors.Wrap(err, "failed creating a new AzureMachinePoolService")
+		}
+
+		if err := amps.Delete(ctx); err != nil {
 			return reconcile.Result{}, errors.Wrapf(err, "error deleting AzureCluster %s/%s", clusterScope.Namespace(), clusterScope.ClusterName())
 		}
 	}

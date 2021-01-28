@@ -22,7 +22,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/containerservice/mgmt/2020-02-01/containerservice"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/pkg/errors"
+
 	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	"sigs.k8s.io/cluster-api-provider-azure/util/tele"
 )
 
 // Client wraps go-sdk
@@ -48,18 +50,23 @@ func NewClient(auth azure.Authorizer) *AzureClient {
 // newAgentPoolsClient creates a new agent pool client from subscription ID.
 func newAgentPoolsClient(subscriptionID string, baseURI string, authorizer autorest.Authorizer) containerservice.AgentPoolsClient {
 	agentPoolsClient := containerservice.NewAgentPoolsClientWithBaseURI(baseURI, subscriptionID)
-	agentPoolsClient.Authorizer = authorizer
-	agentPoolsClient.AddToUserAgent(azure.UserAgent())
+	azure.SetAutoRestClientDefaults(&agentPoolsClient.Client, authorizer)
 	return agentPoolsClient
 }
 
 // Get gets an agent pool.
 func (ac *AzureClient) Get(ctx context.Context, resourceGroupName, cluster, name string) (containerservice.AgentPool, error) {
+	ctx, span := tele.Tracer().Start(ctx, "agentpools.AzureClient.Get")
+	defer span.End()
+
 	return ac.agentpools.Get(ctx, resourceGroupName, cluster, name)
 }
 
 // CreateOrUpdate creates or updates an agent pool.
 func (ac *AzureClient) CreateOrUpdate(ctx context.Context, resourceGroupName, cluster, name string, properties containerservice.AgentPool) error {
+	ctx, span := tele.Tracer().Start(ctx, "agentpools.AzureClient.CreateOrUpdate")
+	defer span.End()
+
 	future, err := ac.agentpools.CreateOrUpdate(ctx, resourceGroupName, cluster, name, properties)
 	if err != nil {
 		return errors.Wrap(err, "failed to begin operation")
@@ -73,6 +80,9 @@ func (ac *AzureClient) CreateOrUpdate(ctx context.Context, resourceGroupName, cl
 
 // Delete deletes an agent pool.
 func (ac *AzureClient) Delete(ctx context.Context, resourceGroupName, cluster, name string) error {
+	ctx, span := tele.Tracer().Start(ctx, "agentpools.AzureClient.Delete")
+	defer span.End()
+
 	future, err := ac.agentpools.Delete(ctx, resourceGroupName, cluster, name)
 	if err != nil {
 		return errors.Wrap(err, "failed to begin operation")

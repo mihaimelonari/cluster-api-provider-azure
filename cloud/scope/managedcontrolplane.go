@@ -26,12 +26,12 @@ import (
 	"k8s.io/klog/klogr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	expv1 "sigs.k8s.io/cluster-api/exp/api/v1alpha3"
-
-	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
-	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
-
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	infrav1 "sigs.k8s.io/cluster-api-provider-azure/api/v1alpha3"
+	azure "sigs.k8s.io/cluster-api-provider-azure/cloud"
+	infrav1exp "sigs.k8s.io/cluster-api-provider-azure/exp/api/v1alpha3"
 )
 
 // ManagedControlPlaneScopeParams defines the input parameters used to create a new
@@ -97,22 +97,30 @@ type ManagedControlPlaneScope struct {
 	PatchTarget      runtime.Object
 }
 
+// ResourceGroup returns the managed control plane's resource group.
 func (s *ManagedControlPlaneScope) ResourceGroup() string {
 	if s.ControlPlane == nil {
 		return ""
 	}
-	return s.ControlPlane.Spec.ResourceGroup
+	return s.ControlPlane.Spec.ResourceGroupName
 }
 
+// ClusterName returns the managed control plane's name.
 func (s *ManagedControlPlaneScope) ClusterName() string {
 	return s.Cluster.Name
 }
 
+// Location returns the managed control plane's Azure location, or an empty string.
 func (s *ManagedControlPlaneScope) Location() string {
 	if s.ControlPlane == nil {
 		return ""
 	}
 	return s.ControlPlane.Spec.Location
+}
+
+// AvailabilitySetEnabled is always false for a managed control plane
+func (s *ManagedControlPlaneScope) AvailabilitySetEnabled() bool {
+	return false // not applicable for a managed control plane
 }
 
 // AdditionalTags returns AdditionalTags from the ControlPlane spec.
@@ -142,4 +150,94 @@ func (s *ManagedControlPlaneScope) Authorizer() autorest.Authorizer {
 // PatchObject persists the cluster configuration and status.
 func (s *ManagedControlPlaneScope) PatchObject(ctx context.Context) error {
 	return s.patchHelper.Patch(ctx, s.PatchTarget)
+}
+
+// Vnet returns the cluster Vnet.
+func (s *ManagedControlPlaneScope) Vnet() *infrav1.VnetSpec {
+	return &infrav1.VnetSpec{
+		ResourceGroup: s.ControlPlane.Spec.ResourceGroupName,
+		Name:          s.ControlPlane.Spec.VirtualNetwork.Name,
+		CIDRBlocks:    []string{s.ControlPlane.Spec.VirtualNetwork.CIDRBlock},
+	}
+}
+
+// VNetSpec returns the virtual network spec.
+func (s *ManagedControlPlaneScope) VNetSpec() azure.VNetSpec {
+	return azure.VNetSpec{
+		ResourceGroup: s.Vnet().ResourceGroup,
+		Name:          s.Vnet().Name,
+		CIDRs:         s.Vnet().CIDRBlocks,
+	}
+}
+
+// ControlPlaneRouteTable returns the cluster controlplane routetable.
+func (s *ManagedControlPlaneScope) ControlPlaneRouteTable() *infrav1.RouteTable {
+	return nil
+}
+
+// NodeRouteTable returns the cluster node routetable.
+func (s *ManagedControlPlaneScope) NodeRouteTable() *infrav1.RouteTable {
+	return nil
+}
+
+// SubnetSpecs returns the subnets specs.
+func (s *ManagedControlPlaneScope) SubnetSpecs() []azure.SubnetSpec {
+	return []azure.SubnetSpec{
+		{
+			Name:     s.NodeSubnet().Name,
+			CIDRs:    s.NodeSubnet().CIDRBlocks,
+			VNetName: s.Vnet().Name,
+		},
+	}
+}
+
+// NodeSubnet returns the cluster node subnet.
+func (s *ManagedControlPlaneScope) NodeSubnet() *infrav1.SubnetSpec {
+	return &infrav1.SubnetSpec{
+		Name:       s.ControlPlane.Spec.VirtualNetwork.Subnet.Name,
+		CIDRBlocks: []string{s.ControlPlane.Spec.VirtualNetwork.Subnet.CIDRBlock},
+	}
+}
+
+// ControlPlaneSubnet returns the cluster control plane subnet.
+func (s *ManagedControlPlaneScope) ControlPlaneSubnet() *infrav1.SubnetSpec {
+	return nil
+}
+
+// IsIPv6Enabled returns true if a cluster is ipv6 enabled.
+// Currently always false as managed control planes do not currently implement ipv6.
+func (s *ManagedControlPlaneScope) IsIPv6Enabled() bool {
+	return false
+}
+
+// IsVnetManaged returns true if the vnet is managed.
+func (s *ManagedControlPlaneScope) IsVnetManaged() bool {
+	return true
+}
+
+// APIServerLBName returns the API Server LB name.
+func (s *ManagedControlPlaneScope) APIServerLBName() string {
+	return "" // does not apply for AKS
+}
+
+// APIServerLBPoolName returns the API Server LB backend pool name.
+func (s *ManagedControlPlaneScope) APIServerLBPoolName(loadBalancerName string) string {
+	return "" // does not apply for AKS
+}
+
+// IsAPIServerPrivate returns true if the API Server LB is of type Internal.
+// Currently always false as managed control planes do not currently implement private clusters.
+func (s *ManagedControlPlaneScope) IsAPIServerPrivate() bool {
+	return false
+}
+
+// OutboundLBName returns the name of the outbound LB.
+// Note: for managed clusters, the outbound LB lifecycle is not managed.
+func (s *ManagedControlPlaneScope) OutboundLBName(_ string) string {
+	return "kubernetes"
+}
+
+// OutboundPoolName returns the outbound LB backend pool name.
+func (s *ManagedControlPlaneScope) OutboundPoolName(_ string) string {
+	return "aksOutboundBackendPool" // hard-coded in aks
 }
