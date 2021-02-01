@@ -345,6 +345,9 @@ func TestReconcileVMSS(t *testing.T) {
 				setupDefaultVMSSStartCreatingExpectations(s, m)
 				vmss := newDefaultVMSS()
 				vmss.VirtualMachineScaleSetProperties.VirtualMachineProfile.Priority = compute.Spot
+				vmss.VirtualMachineScaleSetProperties.VirtualMachineProfile.BillingProfile = &compute.BillingProfile{
+					MaxPrice: to.Float64Ptr(0.001),
+				}
 				vmss.VirtualMachineScaleSetProperties.VirtualMachineProfile.EvictionPolicy = compute.Deallocate
 				vmss = setHashOnVMSS(g, vmss)
 				m.CreateOrUpdateAsync(gomockinternal.AContext(), defaultResourceGroup, defaultVMSSName, gomockinternal.DiffEq(vmss)).
